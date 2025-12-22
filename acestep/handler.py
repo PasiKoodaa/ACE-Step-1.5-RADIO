@@ -144,6 +144,7 @@ class AceStepHandler:
         init_llm: bool = False,
         lm_model_path: str = "acestep-5Hz-lm-0.6B",
         use_flash_attention: bool = False,
+        compile_model: bool = False,
     ) -> Tuple[str, bool]:
         """
         Initialize model service
@@ -155,6 +156,7 @@ class AceStepHandler:
             init_llm: Whether to initialize 5Hz LM model
             lm_model_path: 5Hz LM model path
             use_flash_attention: Whether to use flash attention (requires flash_attn package)
+            compile_model: Whether to use torch.compile to optimize the model
         
         Returns:
             (status_message, enable_generate_button)
@@ -165,7 +167,7 @@ class AceStepHandler:
             
             self.device = device
             # Set dtype based on device: bfloat16 for cuda, float32 for cpu
-            self.dtype = torch.bfloat16 if device == "cuda" else torch.float32
+            self.dtype = torch.bfloat16 if device in ["cuda","xpu"] else torch.float32
 
             # Auto-detect project root (independent of passed project_root parameter)
             current_file = os.path.abspath(__file__)
@@ -177,15 +179,44 @@ class AceStepHandler:
             acestep_v15_checkpoint_path = os.path.join(checkpoint_dir, config_path)
             if os.path.exists(acestep_v15_checkpoint_path):
                 # Determine attention implementation
-                attn_implementation = "flash_attention_2" if use_flash_attention and self.is_flash_attention_available() else "eager"
                 if use_flash_attention and self.is_flash_attention_available():
+                    attn_implementation = "flash_attention_2"
                     self.dtype = torch.bfloat16
-                self.model = AutoModel.from_pretrained(acestep_v15_checkpoint_path, trust_remote_code=True, dtype=self.dtype)
+                else:
+                    attn_implementation = "sdpa"
+
+                try:
+                    logger.info(f"Attempting to load model with attention implementation: {attn_implementation}")
+                    self.model = AutoModel.from_pretrained(
+                        acestep_v15_checkpoint_path, 
+                        trust_remote_code=True, 
+                        dtype=self.dtype,
+                        attn_implementation=attn_implementation
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to load model with {attn_implementation}: {e}")
+                    if attn_implementation == "sdpa":
+                        logger.info("Falling back to eager attention")
+                        attn_implementation = "eager"
+                        self.model = AutoModel.from_pretrained(
+                            acestep_v15_checkpoint_path, 
+                            trust_remote_code=True, 
+                            dtype=self.dtype,
+                            attn_implementation=attn_implementation
+                        )
+                    else:
+                        raise e
+
                 self.model.config._attn_implementation = attn_implementation
                 self.config = self.model.config
                 # Move model to device and set dtype
                 self.model = self.model.to(device).to(self.dtype)
                 self.model.eval()
+                
+                if compile_model:
+                    logger.info("Compiling model with torch.compile...")
+                    self.model = torch.compile(self.model)
+                    
                 silence_latent_path = os.path.join(acestep_v15_checkpoint_path, "silence_latent.pt")
                 if os.path.exists(silence_latent_path):
                     self.silence_latent = torch.load(silence_latent_path).transpose(1, 2)
@@ -199,7 +230,9 @@ class AceStepHandler:
             vae_checkpoint_path = os.path.join(checkpoint_dir, "vae")
             if os.path.exists(vae_checkpoint_path):
                 self.vae = AutoencoderOobleck.from_pretrained(vae_checkpoint_path)
-                self.vae = self.vae.to(device).to(self.dtype)
+                # Use bfloat16 for VAE on GPU, otherwise use self.dtype (float32 on CPU)
+                vae_dtype = torch.bfloat16 if device in ["cuda", "xpu"] else self.dtype
+                self.vae = self.vae.to(device).to(vae_dtype)
                 self.vae.eval()
             else:
                 raise FileNotFoundError(f"VAE checkpoint not found at {vae_checkpoint_path}")
@@ -229,7 +262,7 @@ class AceStepHandler:
                     return f"❌ 5Hz LM model not found at {full_lm_model_path}", False
 
             # Determine actual attention implementation used
-            actual_attn = "flash_attention_2" if use_flash_attention and self.is_flash_attention_available() else "eager"
+            actual_attn = getattr(self.config, "_attn_implementation", "eager")
             
             status_msg = f"✅ Model initialized successfully on {device}\n"
             status_msg += f"Main model: {acestep_v15_checkpoint_path}\n"
@@ -240,7 +273,8 @@ class AceStepHandler:
             else:
                 status_msg += f"5Hz LM model: Not loaded (checkbox not selected)\n"
             status_msg += f"Dtype: {self.dtype}\n"
-            status_msg += f"Attention: {actual_attn}"
+            status_msg += f"Attention: {actual_attn}\n"
+            status_msg += f"Compiled: {compile_model}"
             
             return status_msg, True
             
@@ -1115,7 +1149,11 @@ class AceStepHandler:
                     expected_latent_length = current_wav.shape[-1] // 1920
                     target_latent = self.silence_latent[0, :expected_latent_length, :]
                 else:
-                    target_latent = self.vae.encode(current_wav.to(self.device).to(self.dtype)).latent_dist.sample()
+                    # Ensure input is in VAE's dtype
+                    vae_input = current_wav.to(self.device).to(self.vae.dtype)
+                    target_latent = self.vae.encode(vae_input).latent_dist.sample()
+                    # Cast back to model dtype
+                    target_latent = target_latent.to(self.dtype)
                     target_latent = target_latent.squeeze(0).transpose(0, 1)
                 target_latents_list.append(target_latent)
                 latent_lengths.append(target_latent.shape[0])
@@ -1471,7 +1509,11 @@ class AceStepHandler:
                 refer_audio_order_mask.append(batch_idx)
             else:
                 for refer_audio in refer_audios:
-                    refer_audio_latent = self.vae.encode(refer_audio.unsqueeze(0)).latent_dist.sample()
+                    # Ensure input is in VAE's dtype
+                    vae_input = refer_audio.unsqueeze(0).to(self.vae.dtype)
+                    refer_audio_latent = self.vae.encode(vae_input).latent_dist.sample()
+                    # Cast back to model dtype
+                    refer_audio_latent = refer_audio_latent.to(self.dtype)
                     refer_audio_latents.append(refer_audio_latent.transpose(1, 2))
                     refer_audio_order_mask.append(batch_idx)
 
@@ -1802,6 +1844,10 @@ class AceStepHandler:
              seed_value_for_ui, align_score_1, align_text_1, align_plot_1, 
              align_score_2, align_text_2, align_plot_2)
         """
+        if progress is None:
+            def progress(*args, **kwargs):
+                pass
+
         if self.model is None or self.vae is None or self.text_tokenizer is None or self.text_encoder is None:
             return None, None, [], "", "❌ Model not fully initialized. Please initialize all components first.", "-1", "", "", None, "", "", None
 
@@ -1927,7 +1973,11 @@ class AceStepHandler:
             with torch.no_grad():
                 # Transpose for VAE decode: [batch, latent_length, latent_dim] -> [batch, latent_dim, latent_length]
                 pred_latents_for_decode = pred_latents.transpose(1, 2)
+                # Ensure input is in VAE's dtype
+                pred_latents_for_decode = pred_latents_for_decode.to(self.vae.dtype)
                 pred_wavs = self.vae.decode(pred_latents_for_decode).sample  # [batch, channels, samples]
+                # Cast output to float32 for audio processing/saving
+                pred_wavs = pred_wavs.to(torch.float32)
             end_time = time.time()
             time_costs["vae_decode_time_cost"] = end_time - start_time
             time_costs["total_time_cost"] = time_costs["total_time_cost"] + time_costs["vae_decode_time_cost"]
