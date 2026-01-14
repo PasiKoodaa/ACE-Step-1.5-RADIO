@@ -40,9 +40,10 @@ def parse_lrc_to_subtitles(lrc_text: str, total_duration: Optional[float] = None
     lines = lrc_text.strip().split('\n')
     
     # Regex patterns for LRC timestamps
-    # Pattern 1: [MM:SS.ss] - standard LRC with start time only
+    # Pattern 1: [MM:SS.ss] or [MM:SS.sss] - standard LRC with start time only
     # Pattern 2: [MM:SS.ss][MM:SS.ss] - LRC with both start and end time
-    timestamp_pattern = r'\[(\d{2}):(\d{2})\.(\d{2})\]'
+    # Support both 2-digit (centiseconds) and 3-digit (milliseconds) formats
+    timestamp_pattern = r'\[(\d{2}):(\d{2})\.(\d{2,3})\]'
     
     parsed_lines = []
     
@@ -62,14 +63,17 @@ def parse_lrc_to_subtitles(lrc_text: str, total_duration: Optional[float] = None
             continue
         
         # Parse first timestamp as start time
+        # Handle both 2-digit (centiseconds, /100) and 3-digit (milliseconds, /1000) formats
         start_minutes, start_seconds, start_centiseconds = timestamps[0]
-        start_time = int(start_minutes) * 60 + int(start_seconds) + int(start_centiseconds) / 100.0
+        cs = int(start_centiseconds)
+        start_time = int(start_minutes) * 60 + int(start_seconds) + (cs / 100.0 if len(start_centiseconds) == 2 else cs / 1000.0)
         
         # If there's a second timestamp, use it as end time
         end_time = None
         if len(timestamps) >= 2:
             end_minutes, end_seconds, end_centiseconds = timestamps[1]
-            end_time = int(end_minutes) * 60 + int(end_seconds) + int(end_centiseconds) / 100.0
+            cs_end = int(end_centiseconds)
+            end_time = int(end_minutes) * 60 + int(end_seconds) + (cs_end / 100.0 if len(end_centiseconds) == 2 else cs_end / 1000.0)
         
         parsed_lines.append({
             'start': start_time,
@@ -99,6 +103,83 @@ def parse_lrc_to_subtitles(lrc_text: str, total_duration: Optional[float] = None
         })
     
     return subtitles
+
+
+def _format_vtt_timestamp(seconds: float) -> str:
+    """
+    Format seconds to VTT timestamp format: HH:MM:SS.mmm
+    
+    Args:
+        seconds: Time in seconds
+        
+    Returns:
+        Formatted timestamp string
+    """
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
+def lrc_to_vtt_file(lrc_text: str, total_duration: float = None) -> Optional[str]:
+    """
+    Convert LRC text to a VTT file and return the file path.
+    
+    This creates a WebVTT subtitle file that Gradio can use as a native
+    <track src="..."> element, which is more stable than JS-based subtitle injection.
+    
+    VTT format example:
+    WEBVTT
+    
+    00:00:00.000 --> 00:00:05.000
+    First subtitle line
+    
+    00:00:05.000 --> 00:00:10.000
+    Second subtitle line
+    
+    Args:
+        lrc_text: LRC format lyrics string
+        total_duration: Total audio duration in seconds (used for last line's end time)
+        
+    Returns:
+        Path to the generated VTT file, or None if conversion fails
+    """
+    if not lrc_text or not lrc_text.strip():
+        return None
+    
+    # Parse LRC to subtitles data
+    subtitles = parse_lrc_to_subtitles(lrc_text, total_duration=total_duration)
+    
+    if not subtitles:
+        return None
+    
+    # Build VTT content
+    vtt_lines = ["WEBVTT", ""]  # VTT header with blank line
+    
+    for i, subtitle in enumerate(subtitles):
+        start_time = subtitle['timestamp'][0]
+        end_time = subtitle['timestamp'][1]
+        text = subtitle['text']
+        
+        # Add cue with index (optional but helpful for debugging)
+        vtt_lines.append(str(i + 1))
+        vtt_lines.append(f"{_format_vtt_timestamp(start_time)} --> {_format_vtt_timestamp(end_time)}")
+        vtt_lines.append(text)
+        vtt_lines.append("")  # Blank line between cues
+    
+    vtt_content = "\n".join(vtt_lines)
+    
+    # Create temp directory and save VTT file
+    try:
+        temp_dir = tempfile.mkdtemp(prefix="acestep_vtt_")
+        vtt_path = os.path.join(temp_dir, "subtitles.vtt")
+        with open(vtt_path, "w", encoding="utf-8") as f:
+            f.write(vtt_content)
+        return vtt_path
+    except Exception as e:
+        logger.error(f"[lrc_to_vtt_file] Failed to create VTT file: {e}")
+        return None
 
 
 def _build_generation_info(
@@ -479,18 +560,23 @@ def generate_with_progress(
     
     # Clear all scores, codes, lrc displays at the start of generation
     # Note: Create independent gr.update objects (not references to the same object)
-    # CRITICAL: Must clear audio subtitles here! Otherwise old subtitles persist on new audio
-    # causing flickering when second generation loads new audio but old subtitles remain.
-    clear_scores = [gr.update(value="", visible=False) for _ in range(8)]
-    clear_codes = [gr.update(value="", visible=False) for _ in range(8)]
-    clear_lrcs = [gr.update(value="", visible=False) for _ in range(8)]
-    clear_accordions = [gr.update(visible=False) for _ in range(8)]
-    # Clear subtitles FIRST before any new audio is loaded
-    clear_audio_subtitles = [gr.update(subtitles=[]) for _ in range(8)]
+    # 
+    # NEW APPROACH: Don't update audio subtitles directly!
+    # Clearing lrc_display will trigger lrc_display.change() which clears subtitles automatically.
+    # This decouples audio value updates from subtitle updates, avoiding flickering.
+    # 
+    # IMPORTANT: Keep visible=True to ensure .change() event is properly triggered by Gradio.
+    # These should always remain visible=True so users can expand accordion anytime.
+    clear_scores = [gr.update(value="", visible=True) for _ in range(8)]
+    clear_codes = [gr.update(value="", visible=True) for _ in range(8)]
+    # Clear lrc_display with empty string - this triggers .change() to clear subtitles
+    clear_lrcs = [gr.update(value="", visible=True) for _ in range(8)]
+    clear_accordions = [gr.skip() for _ in range(8)]  # Don't change accordion visibility
+    dump_audio = [None for _ in range(8)]
     yield (
-        # Clear audio subtitles (value will be updated in loop, but clear subtitles NOW)
-        clear_audio_subtitles[0], clear_audio_subtitles[1], clear_audio_subtitles[2], clear_audio_subtitles[3],
-        clear_audio_subtitles[4], clear_audio_subtitles[5], clear_audio_subtitles[6], clear_audio_subtitles[7],
+        # Audio outputs - just skip, value will be updated in loop
+        # Subtitles will be cleared via lrc_display.change()
+        dump_audio[0], dump_audio[1], dump_audio[2], dump_audio[3], dump_audio[4], dump_audio[5], dump_audio[6], dump_audio[7],
         None,  # all_audio_paths (clear batch files)
         generation_info,
         "Clearing previous results...",
@@ -619,9 +705,9 @@ def generate_with_progress(
                             lrc_text = lrc_result.get("lrc_text", "")
                             final_lrcs_list[i] = lrc_text
                             logger.info(f"[auto_lrc] LRC text length for sample {i + 1}: {len(lrc_text)}")
-                            # Parse LRC to subtitles format
-                            subtitles_data = parse_lrc_to_subtitles(lrc_text, total_duration=float(actual_duration))
-                            final_subtitles_list[i] = subtitles_data
+                            # Convert LRC to VTT file for storage (consistent with new VTT-based approach)
+                            vtt_path = lrc_to_vtt_file(lrc_text, total_duration=float(actual_duration))
+                            final_subtitles_list[i] = vtt_path
                     else:
                         logger.warning(f"[auto_lrc] Missing required extra_outputs for sample {i + 1}")
                 except Exception as e:
@@ -630,54 +716,88 @@ def generate_with_progress(
                 total_auto_lrc_time += (auto_lrc_end - auto_lrc_start)
             
             status_message = f"Encoding & Ready: {i+1}/{len(audios)}"
-            current_audio_updates = [gr.skip() for _ in range(8)]
-            # Only set value here, subtitles will be set in the final yield
-            # Setting value and subtitles together causes flickering issues
-            current_audio_updates[i] = audio_path
-
-            # Codes display updates (for results section)
-            codes_display_updates = [gr.skip() for _ in range(8)]
-            codes_display_updates[i] = gr.update(value=code_str, visible=bool(code_str))
-            
-            # LRC display updates
-            lrc_display_updates = [gr.skip() for _ in range(8)]
             has_lrc = bool(final_lrcs_list[i])
-            if auto_lrc and has_lrc:
-                lrc_display_updates[i] = gr.update(value=final_lrcs_list[i], visible=True)
-            
-            # Details accordion updates (show if code OR lrc OR score exists)
-            details_accordion_updates = [gr.skip() for _ in range(8)]
             has_score = bool(score_str) and score_str != "Done!"
             has_content = bool(code_str) or has_lrc or has_score
-            details_accordion_updates[i] = gr.update(visible=has_content)
+            
+            # ============== STEP 1: Yield audio + CLEAR LRC ==============
+            # First, update audio and clear LRC to avoid race condition
+            # (audio needs to load before subtitles are set via .change() event)
+            current_audio_updates = [gr.skip() for _ in range(8)]
+            current_audio_updates[i] = audio_path
+            
+            codes_display_updates = [gr.skip() for _ in range(8)]
+            codes_display_updates[i] = gr.update(value=code_str, visible=True)  # Keep visible=True
+            
+            details_accordion_updates = [gr.skip() for _ in range(8)]
+            # Don't change accordion visibility - keep it always expandable
+            
+            # Clear LRC first (this triggers .change() to clear subtitles)
+            # Keep visible=True to ensure .change() event is properly triggered
+            lrc_clear_updates = [gr.skip() for _ in range(8)]
+            lrc_clear_updates[i] = gr.update(value="", visible=True)
             
             yield (
                 current_audio_updates[0], current_audio_updates[1], current_audio_updates[2], current_audio_updates[3],
                 current_audio_updates[4], current_audio_updates[5], current_audio_updates[6], current_audio_updates[7],
-                all_audio_paths,   # Real-time update of Batch File list
+                all_audio_paths,
                 generation_info,
                 status_message,
                 seed_value_for_ui,
-                # Scores
                 scores_ui_updates[0], scores_ui_updates[1], scores_ui_updates[2], scores_ui_updates[3], scores_ui_updates[4], scores_ui_updates[5], scores_ui_updates[6], scores_ui_updates[7],
-                # Codes display in results section
                 codes_display_updates[0], codes_display_updates[1], codes_display_updates[2], codes_display_updates[3],
                 codes_display_updates[4], codes_display_updates[5], codes_display_updates[6], codes_display_updates[7],
-                # Details accordion visibility
                 details_accordion_updates[0], details_accordion_updates[1], details_accordion_updates[2], details_accordion_updates[3],
                 details_accordion_updates[4], details_accordion_updates[5], details_accordion_updates[6], details_accordion_updates[7],
-                # LRC display
-                lrc_display_updates[0], lrc_display_updates[1], lrc_display_updates[2], lrc_display_updates[3],
-                lrc_display_updates[4], lrc_display_updates[5], lrc_display_updates[6], lrc_display_updates[7],
+                # LRC display - CLEAR first
+                lrc_clear_updates[0], lrc_clear_updates[1], lrc_clear_updates[2], lrc_clear_updates[3],
+                lrc_clear_updates[4], lrc_clear_updates[5], lrc_clear_updates[6], lrc_clear_updates[7],
                 lm_generated_metadata,
                 is_format_caption,
-                None,  # Placeholder for extra_outputs (only filled in final yield)
-                None,  # Placeholder for raw_codes_list (only filled in final yield)
+                None,
+                None,
             )
+            
+            # Wait for audio to load before setting subtitles
+            time_module.sleep(0.05)
+            
+            # ============== STEP 2: Skip audio + SET actual LRC ==============
+            # Now set the actual LRC content, which triggers .change() to set subtitles
+            # This two-step approach (same as navigate_to_batch) ensures audio is loaded first
+            if has_lrc:
+                skip_audio = [gr.skip() for _ in range(8)]
+                skip_scores = [gr.skip() for _ in range(8)]
+                skip_codes = [gr.skip() for _ in range(8)]
+                skip_accordions = [gr.skip() for _ in range(8)]
+                
+                lrc_actual_updates = [gr.skip() for _ in range(8)]
+                lrc_actual_updates[i] = gr.update(value=final_lrcs_list[i], visible=True)  # Keep visible=True
+                
+                yield (
+                    skip_audio[0], skip_audio[1], skip_audio[2], skip_audio[3],
+                    skip_audio[4], skip_audio[5], skip_audio[6], skip_audio[7],
+                    gr.skip(),  # all_audio_paths
+                    gr.skip(),  # generation_info
+                    gr.skip(),  # status_message
+                    gr.skip(),  # seed
+                    skip_scores[0], skip_scores[1], skip_scores[2], skip_scores[3],
+                    skip_scores[4], skip_scores[5], skip_scores[6], skip_scores[7],
+                    skip_codes[0], skip_codes[1], skip_codes[2], skip_codes[3],
+                    skip_codes[4], skip_codes[5], skip_codes[6], skip_codes[7],
+                    skip_accordions[0], skip_accordions[1], skip_accordions[2], skip_accordions[3],
+                    skip_accordions[4], skip_accordions[5], skip_accordions[6], skip_accordions[7],
+                    # LRC display - SET actual content (triggers .change() to set subtitles)
+                    lrc_actual_updates[0], lrc_actual_updates[1], lrc_actual_updates[2], lrc_actual_updates[3],
+                    lrc_actual_updates[4], lrc_actual_updates[5], lrc_actual_updates[6], lrc_actual_updates[7],
+                    gr.skip(),  # lm_generated_metadata
+                    gr.skip(),  # is_format_caption
+                    None,
+                    None,
+                )
         else:
             # If i exceeds the generated count (e.g., batch=2, i=2..7), do not yield
             pass
-        time_module.sleep(0.1)
+        time_module.sleep(0.05)
     
     # Record audio conversion time
     audio_conversion_end_time = time_module.time()
@@ -704,30 +824,19 @@ def generate_with_progress(
         num_audios=len(result.audios),
     )
     
-    # Build final codes display, LRC display, accordion visibility updates, and audio subtitles
+    # Build final codes display, LRC display, accordion visibility updates
     final_codes_display_updates = [gr.skip() for _ in range(8)]
-    final_lrc_display_updates = [gr.skip() for _ in range(8)]
+    # final_lrc_display_updates = [gr.skip() for _ in range(8)]
     final_accordion_updates = [gr.skip() for _ in range(8)]
     
-    # Set subtitles separately from value (setting both together causes flickering)
-    # For samples with auto_lrc subtitles: set the subtitles
-    # For samples without subtitles: clear any old subtitles by setting to None
-    # This ensures old subtitles from previous generation are removed
-    final_audio_updates = []
-    for i in range(8):
-        if i < len(audios):
-            # This sample was generated - set or clear subtitles
-            # Use empty array [] to clear subtitles (None doesn't work!)
-            subtitles_data = final_subtitles_list[i] if auto_lrc and final_subtitles_list[i] else []
-            # Apply subtitles (or [] to clear old ones) - only update subtitles, not value!
-            final_audio_updates.append(gr.update(subtitles=subtitles_data))
-        else:
-            # This sample slot was not used - skip
-            final_audio_updates.append(gr.skip())
+    # NEW APPROACH: Don't update audio subtitles directly in final yield!
+    # The lrc_display was already updated in the loop yields above.
+    # lrc_display.change() event will automatically update the audio subtitles.
+    # This decouples audio value updates from subtitle updates, avoiding flickering.
 
     yield (
-        final_audio_updates[0], final_audio_updates[1], final_audio_updates[2], final_audio_updates[3],
-        final_audio_updates[4], final_audio_updates[5], final_audio_updates[6], final_audio_updates[7],
+        # Audio - just skip, subtitles are updated via lrc_display.change()
+        gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),
         all_audio_paths,
         generation_info,
         "Generation Complete",
@@ -741,8 +850,8 @@ def generate_with_progress(
         final_accordion_updates[0], final_accordion_updates[1], final_accordion_updates[2], final_accordion_updates[3],
         final_accordion_updates[4], final_accordion_updates[5], final_accordion_updates[6], final_accordion_updates[7],
         # LRC display
-        final_lrc_display_updates[0], final_lrc_display_updates[1], final_lrc_display_updates[2], final_lrc_display_updates[3],
-        final_lrc_display_updates[4], final_lrc_display_updates[5], final_lrc_display_updates[6], final_lrc_display_updates[7],
+        final_lrcs_list[0], final_lrcs_list[1], final_lrcs_list[2], final_lrcs_list[3],
+        final_lrcs_list[4], final_lrcs_list[5], final_lrcs_list[6], final_lrcs_list[7],
         lm_generated_metadata,
         is_format_caption,
         {
@@ -1017,10 +1126,10 @@ def calculate_score_handler_with_selection(
             batch_queue[current_batch_index]["scores"] = [""] * 8
         batch_queue[current_batch_index]["scores"][sample_idx - 1] = score_display
     
-    # Return: score_display (content + visible), accordion visible, batch_queue
+    # Return: score_display (with visible=True), accordion skip, batch_queue
     return (
-        gr.update(value=score_display, visible=True),  # score_display with content
-        gr.update(visible=True),  # details_accordion
+        gr.update(value=score_display, visible=True),  # score_display with content, keep visible=True
+        gr.skip(),  # details_accordion - don't change visibility
         batch_queue
     )
 
@@ -1028,11 +1137,14 @@ def calculate_score_handler_with_selection(
 def generate_lrc_handler(dit_handler, sample_idx, current_batch_index, batch_queue, vocal_language, inference_steps):
     """
     Generate LRC timestamps for a specific audio sample.
-    
+
     This function retrieves cached generation data from batch_queue and calls
     the handler's get_lyric_timestamp method to generate LRC format lyrics.
-    Audio subtitles are directly updated by this handler (not via lrc_display.change()).
     
+    NEW APPROACH: Only update lrc_display, NOT audio subtitles directly!
+    Audio subtitles will be updated via lrc_display.change() event.
+    This decouples audio value updates from subtitle updates, avoiding flickering.
+
     Args:
         dit_handler: DiT handler instance with get_lyric_timestamp method
         sample_idx: Which sample to generate LRC for (1-8)
@@ -1040,21 +1152,23 @@ def generate_lrc_handler(dit_handler, sample_idx, current_batch_index, batch_que
         batch_queue: Dictionary storing all batch generation data
         vocal_language: Language code for lyrics
         inference_steps: Number of inference steps used in generation
-    
+
     Returns:
-        Tuple of (lrc_display_update, details_accordion_update, audio_update, batch_queue)
+        Tuple of (lrc_display_update, details_accordion_update, batch_queue)
+        Note: No audio_update - subtitles updated via lrc_display.change()
     """
     import torch
     
     if current_batch_index not in batch_queue:
-        return gr.skip(), gr.skip(), gr.skip(), batch_queue
-    
+        return gr.skip(), gr.skip(), batch_queue
+
     batch_data = batch_queue[current_batch_index]
     extra_outputs = batch_data.get("extra_outputs", {})
-    
+
     # Check if required data is available
+    # Keep visible=True to ensure .change() event is properly triggered
     if not extra_outputs:
-        return gr.update(value=t("messages.lrc_no_extra_outputs"), visible=True), gr.update(visible=True), gr.skip(), batch_queue
+        return gr.update(value=t("messages.lrc_no_extra_outputs"), visible=True), gr.skip(), batch_queue
     
     pred_latents = extra_outputs.get("pred_latents")
     encoder_hidden_states = extra_outputs.get("encoder_hidden_states")
@@ -1063,7 +1177,7 @@ def generate_lrc_handler(dit_handler, sample_idx, current_batch_index, batch_que
     lyric_token_idss = extra_outputs.get("lyric_token_idss")
     
     if any(x is None for x in [pred_latents, encoder_hidden_states, encoder_attention_mask, context_latents, lyric_token_idss]):
-        return gr.update(value=t("messages.lrc_missing_tensors"), visible=True), gr.update(visible=True), gr.skip(), batch_queue
+        return gr.update(value=t("messages.lrc_missing_tensors"), visible=True), gr.skip(), batch_queue
     
     # Adjust sample_idx to 0-based
     sample_idx_0based = sample_idx - 1
@@ -1071,7 +1185,7 @@ def generate_lrc_handler(dit_handler, sample_idx, current_batch_index, batch_que
     # Check if sample exists in batch
     batch_size = pred_latents.shape[0]
     if sample_idx_0based >= batch_size:
-        return gr.update(value=t("messages.lrc_sample_not_exist"), visible=True), gr.update(visible=True), gr.skip(), batch_queue
+        return gr.update(value=t("messages.lrc_sample_not_exist"), visible=True), gr.skip(), batch_queue
     
     # Extract the specific sample's data
     try:
@@ -1109,79 +1223,62 @@ def generate_lrc_handler(dit_handler, sample_idx, current_batch_index, batch_que
         if result.get("success"):
             lrc_text = result.get("lrc_text", "")
             if not lrc_text:
-                return gr.update(value=t("messages.lrc_empty_result"), visible=True), gr.update(visible=True), gr.skip(), batch_queue
+                return gr.update(value=t("messages.lrc_empty_result"), visible=True), gr.skip(), batch_queue
             
             # Store LRC in batch_queue for later retrieval when switching batches
             if "lrcs" not in batch_queue[current_batch_index]:
                 batch_queue[current_batch_index]["lrcs"] = [""] * 8
             batch_queue[current_batch_index]["lrcs"][sample_idx_0based] = lrc_text
             
-            # Parse LRC to subtitles format
-            subtitles_data = parse_lrc_to_subtitles(lrc_text, total_duration=float(audio_duration))
-            
-            # Store subtitles in batch_queue for batch navigation
+            # Convert LRC to VTT file and store path for batch navigation (consistent with VTT-based approach)
+            vtt_path = lrc_to_vtt_file(lrc_text, total_duration=float(audio_duration))
             if "subtitles" not in batch_queue[current_batch_index]:
                 batch_queue[current_batch_index]["subtitles"] = [None] * 8
-            batch_queue[current_batch_index]["subtitles"][sample_idx_0based] = subtitles_data
+            batch_queue[current_batch_index]["subtitles"][sample_idx_0based] = vtt_path
             
-            # Return: lrc_display, details_accordion, audio (subtitles only!), batch_queue
-            # IMPORTANT: Only update subtitles, NOT value - this avoids audio reload/flickering
+            # Return: lrc_display, details_accordion, batch_queue
+            # NEW APPROACH: Only update lrc_display, NOT audio subtitles!
+            # Audio subtitles will be updated via lrc_display.change() event.
+            # Keep visible=True to ensure .change() event is properly triggered
             return (
                 gr.update(value=lrc_text, visible=True),
-                gr.update(visible=True),
-                gr.update(subtitles=subtitles_data),  # Only update subtitles, not value!
+                gr.skip(),
                 batch_queue
             )
         else:
             error_msg = result.get("error", "Unknown error")
-            return gr.update(value=f"❌ {error_msg}", visible=True), gr.update(visible=True), gr.skip(), batch_queue
+            return gr.update(value=f"❌ {error_msg}", visible=True), gr.skip(), batch_queue
             
     except Exception as e:
         logger.exception("[generate_lrc_handler] Error generating LRC")
-        return gr.update(value=f"❌ Error: {str(e)}", visible=True), gr.update(visible=True), gr.skip(), batch_queue
+        return gr.update(value=f"❌ Error: {str(e)}", visible=True), gr.skip(), batch_queue
 
 
-def update_audio_subtitles_from_lrc(lrc_text: str, audio_component_value, audio_duration: float = None):
+def update_audio_subtitles_from_lrc(lrc_text: str, audio_duration: float = None):
     """
     Update Audio component's subtitles based on LRC text content.
     
-    This function is triggered when lrc_display textbox changes (user manual edit).
-    It parses the LRC text and updates the corresponding Audio component's subtitles.
-    
-    Note: When LRC button is clicked, subtitles are updated directly by generate_lrc_handler,
-    not through this function. This function handles manual LRC text edits only.
+    This function generates a VTT file from LRC text and passes the file path
+    to Gradio, which renders it as a native <track src="..."> element.
+    This is more stable than JS-based subtitle injection.
     
     Args:
         lrc_text: LRC format lyrics string from lrc_display textbox
-        audio_component_value: Current value of the audio component (path or dict)
         audio_duration: Optional audio duration for calculating last line's end time
         
     Returns:
-        gr.update for the Audio component with subtitles
+        gr.update for the Audio component with subtitles file path
     """
-    # Get audio path from component value
-    audio_path = None
-    if audio_component_value:
-        if isinstance(audio_component_value, dict):
-            audio_path = audio_component_value.get("path") or audio_component_value.get("value")
-        else:
-            audio_path = audio_component_value
-    
-    # If no audio, skip update
-    if not audio_path:
-        return gr.skip()
-    
     # If LRC text is empty, clear subtitles
-    # Use empty array [] to clear subtitles (None doesn't work!)
     if not lrc_text or not lrc_text.strip():
-        return gr.update(value=audio_path, subtitles=[])
+        return gr.update(subtitles=None)
     
-    # Parse LRC to subtitles format
-    subtitles_data = parse_lrc_to_subtitles(lrc_text, total_duration=audio_duration)
+    # Convert LRC to VTT file and get file path
+    vtt_path = lrc_to_vtt_file(lrc_text, total_duration=audio_duration)
     
-    # For non-empty LRC updates, only set subtitles (avoid audio reload/flickering)
-    # This is for manual LRC text edits - the audio value should remain unchanged
-    return gr.update(subtitles=subtitles_data if subtitles_data else [])
+    # Return file path for native <track> rendering
+    # If conversion failed, clear subtitles
+    return gr.update(subtitles=vtt_path)
 
 
 def capture_current_params(
@@ -1641,6 +1738,22 @@ def generate_next_batch_background(
         # Must check both length AND that the value is not None (intermediate yields use None as placeholder)
         extra_outputs_from_bg = final_result[46] if len(final_result) > 46 and final_result[46] is not None else {}
         
+        # Extract scores from final_result (indices 12-19)
+        # This is critical for auto_score to work when navigating to background-generated batches
+        scores_from_bg = []
+        for score_idx in range(12, 20):
+            if score_idx < len(final_result):
+                score_val = final_result[score_idx]
+                # Handle gr.update objects - extract value if present, otherwise use empty string
+                if hasattr(score_val, 'value'):
+                    scores_from_bg.append(score_val.value if score_val.value else "")
+                elif isinstance(score_val, str):
+                    scores_from_bg.append(score_val)
+                else:
+                    scores_from_bg.append("")
+            else:
+                scores_from_bg.append("")
+        
         # Determine which codes to store
         batch_size = params.get("batch_size_input", 2)
         allow_lm_batch = params.get("allow_lm_batch", False)
@@ -1655,6 +1768,7 @@ def generate_next_batch_background(
         logger.info(f"  - batch_size: {batch_size}")
         logger.info(f"  - generated_codes_single exists: {bool(generated_codes_single)}")
         logger.info(f"  - extra_outputs_from_bg exists: {extra_outputs_from_bg is not None}")
+        logger.info(f"  - scores_from_bg: {[bool(s) for s in scores_from_bg]}")
         if isinstance(codes_to_store, list):
             logger.info(f"  - codes_to_store: LIST with {len(codes_to_store)} items")
             for idx, code in enumerate(codes_to_store):
@@ -1662,7 +1776,7 @@ def generate_next_batch_background(
         else:
             logger.info(f"  - codes_to_store: STRING with {len(codes_to_store) if codes_to_store else 0} chars")
         
-        # Store next batch in queue with codes, batch settings, and ALL generation params
+        # Store next batch in queue with codes, batch settings, scores, and ALL generation params
         batch_queue = store_batch_in_queue(
             batch_queue,
             next_batch_idx,
@@ -1670,6 +1784,7 @@ def generate_next_batch_background(
             generation_info,
             seed_value_for_ui,
             codes=codes_to_store,
+            scores=scores_from_bg,  # FIX: Now passing scores from background generation
             allow_lm_batch=allow_lm_batch,
             batch_size=int(batch_size),
             generation_params=params,
@@ -1677,6 +1792,16 @@ def generate_next_batch_background(
             extra_outputs=extra_outputs_from_bg,  # Now properly extracted from generation result
             status="completed"
         )
+        
+        # FIX: Extract auto_lrc results from extra_outputs (same as generate_with_batch_management)
+        # This ensures LRC and subtitles are properly stored for batch navigation
+        auto_lrc = params.get("auto_lrc", False)
+        if auto_lrc and extra_outputs_from_bg:
+            lrcs_from_extra = extra_outputs_from_bg.get("lrcs", [""] * 8)
+            subtitles_from_extra = extra_outputs_from_bg.get("subtitles", [None] * 8)
+            batch_queue[next_batch_idx]["lrcs"] = lrcs_from_extra
+            batch_queue[next_batch_idx]["subtitles"] = subtitles_from_extra
+            logger.info(f"  - auto_lrc results stored: {[bool(l) for l in lrcs_from_extra]}")
         
         logger.info(f"Batch {next_batch_idx + 1} stored in queue successfully")
         
@@ -1712,10 +1837,17 @@ def generate_next_batch_background(
 
 
 def navigate_to_previous_batch(current_batch_index, batch_queue):
-    """Navigate to previous batch (Result View Only - Never touches Input UI)"""
+    """Navigate to previous batch (Result View Only - Never touches Input UI)
+    
+    Uses two-step yield to avoid subtitle flickering:
+    1. First yield: audio + clear LRC (triggers .change() to clear subtitles)
+    2. Sleep 50ms (let audio load)
+    3. Second yield: skip audio + set actual LRC (triggers .change() to set subtitles)
+    """
     if current_batch_index <= 0:
         gr.Warning(t("messages.at_first_batch"))
-        return [gr.update()] * 48  # 8 audio + 2 batch files/info + 1 index + 1 indicator + 2 btns + 1 status + 8 scores + 8 codes + 8 lrc + 8 accordions + 1 restore
+        yield tuple([gr.update()] * 48)  # 8 audio + 2 batch files/info + 1 index + 1 indicator + 2 btns + 1 status + 8 scores + 8 codes + 8 lrc + 8 accordions + 1 restore
+        return
     
     # Move to previous batch
     new_batch_index = current_batch_index - 1
@@ -1723,26 +1855,23 @@ def navigate_to_previous_batch(current_batch_index, batch_queue):
     # Load batch data from queue
     if new_batch_index not in batch_queue:
         gr.Warning(t("messages.batch_not_found", n=new_batch_index + 1))
-        return [gr.update()] * 48
+        yield tuple([gr.update()] * 48)
+        return
     
     batch_data = batch_queue[new_batch_index]
     audio_paths = batch_data.get("audio_paths", [])
     generation_info_text = batch_data.get("generation_info", "")
     
-    # Prepare audio outputs (up to 8) with subtitles
+    # Prepare audio outputs (up to 8)
     real_audio_paths = [p for p in audio_paths if not p.lower().endswith('.json')]
-    stored_subtitles = batch_data.get("subtitles", [None] * 8)
     
     audio_updates = []
     for idx in range(8):
         if idx < len(real_audio_paths):
             audio_path = real_audio_paths[idx]
-            # Use empty array [] if no subtitles stored (None doesn't clear properly)
-            subtitles_data = stored_subtitles[idx] if idx < len(stored_subtitles) and stored_subtitles[idx] else []
-            # Use gr.update to set both value and subtitles
-            audio_updates.append(gr.update(value=audio_path, subtitles=subtitles_data))
+            audio_updates.append(gr.update(value=audio_path))
         else:
-            audio_updates.append(gr.update(value=None, subtitles=[]))
+            audio_updates.append(gr.update(value=None))
     
     # Update batch indicator
     total_batches = len(batch_queue)
@@ -1766,6 +1895,7 @@ def navigate_to_previous_batch(current_batch_index, batch_queue):
     
     codes_display_updates = []
     lrc_display_updates = []
+    lrc_clear_updates = []  # For first yield - clear LRC
     details_accordion_updates = []
     for i in range(8):
         if stored_allow_lm_batch and isinstance(stored_codes, list):
@@ -1776,18 +1906,14 @@ def navigate_to_previous_batch(current_batch_index, batch_queue):
         lrc_str = lrc_displays[i] if i < len(lrc_displays) else ""
         score_str = score_displays[i] if i < len(score_displays) else ""
         
-        has_code = bool(code_str) and i < batch_size
-        has_lrc = bool(lrc_str)
-        has_score = bool(score_str)
-        
-        # Show accordion if any content exists
-        has_content = has_code or has_lrc or has_score
-        
-        codes_display_updates.append(gr.update(value=code_str, visible=has_code))
-        lrc_display_updates.append(gr.update(value=lrc_str, visible=has_lrc))
-        details_accordion_updates.append(gr.update(visible=has_content))
+        # Keep visible=True to ensure .change() event is properly triggered
+        codes_display_updates.append(gr.update(value=code_str, visible=True))
+        lrc_display_updates.append(gr.update(value=lrc_str, visible=True))
+        lrc_clear_updates.append(gr.update(value="", visible=True))  # Clear first
+        details_accordion_updates.append(gr.skip())  # Don't change accordion visibility
     
-    return (
+    # ============== STEP 1: Yield audio + CLEAR LRC ==============
+    yield (
         audio_updates[0], audio_updates[1], audio_updates[2], audio_updates[3],
         audio_updates[4], audio_updates[5], audio_updates[6], audio_updates[7],
         audio_paths, generation_info_text, new_batch_index, batch_indicator_text,
@@ -1797,19 +1923,54 @@ def navigate_to_previous_batch(current_batch_index, batch_queue):
         score_displays[4], score_displays[5], score_displays[6], score_displays[7],
         codes_display_updates[0], codes_display_updates[1], codes_display_updates[2], codes_display_updates[3],
         codes_display_updates[4], codes_display_updates[5], codes_display_updates[6], codes_display_updates[7],
-        lrc_display_updates[0], lrc_display_updates[1], lrc_display_updates[2], lrc_display_updates[3],
-        lrc_display_updates[4], lrc_display_updates[5], lrc_display_updates[6], lrc_display_updates[7],
+        # LRC display - CLEAR first (triggers .change() to clear subtitles)
+        lrc_clear_updates[0], lrc_clear_updates[1], lrc_clear_updates[2], lrc_clear_updates[3],
+        lrc_clear_updates[4], lrc_clear_updates[5], lrc_clear_updates[6], lrc_clear_updates[7],
         details_accordion_updates[0], details_accordion_updates[1], details_accordion_updates[2], details_accordion_updates[3],
         details_accordion_updates[4], details_accordion_updates[5], details_accordion_updates[6], details_accordion_updates[7],
         gr.update(interactive=True),
     )
+    
+    # Wait for audio to load before setting subtitles
+    time_module.sleep(0.05)
+    
+    # ============== STEP 2: Yield skip audio + SET actual LRC ==============
+    skip_audio = [gr.skip() for _ in range(8)]
+    skip_scores = [gr.skip() for _ in range(8)]
+    skip_codes = [gr.skip() for _ in range(8)]
+    skip_accordions = [gr.skip() for _ in range(8)]
+    
+    yield (
+        skip_audio[0], skip_audio[1], skip_audio[2], skip_audio[3],
+        skip_audio[4], skip_audio[5], skip_audio[6], skip_audio[7],
+        gr.skip(), gr.skip(), gr.skip(), gr.skip(),  # audio_paths, generation_info, batch_index, indicator
+        gr.skip(), gr.skip(),  # prev/next buttons
+        gr.skip(),  # status
+        skip_scores[0], skip_scores[1], skip_scores[2], skip_scores[3],
+        skip_scores[4], skip_scores[5], skip_scores[6], skip_scores[7],
+        skip_codes[0], skip_codes[1], skip_codes[2], skip_codes[3],
+        skip_codes[4], skip_codes[5], skip_codes[6], skip_codes[7],
+        # LRC display - SET actual content (triggers .change() to set subtitles)
+        lrc_display_updates[0], lrc_display_updates[1], lrc_display_updates[2], lrc_display_updates[3],
+        lrc_display_updates[4], lrc_display_updates[5], lrc_display_updates[6], lrc_display_updates[7],
+        skip_accordions[0], skip_accordions[1], skip_accordions[2], skip_accordions[3],
+        skip_accordions[4], skip_accordions[5], skip_accordions[6], skip_accordions[7],
+        gr.skip(),  # restore button
+    )
 
 
 def navigate_to_next_batch(autogen_enabled, current_batch_index, total_batches, batch_queue):
-    """Navigate to next batch (Result View Only - Never touches Input UI)"""
+    """Navigate to next batch (Result View Only - Never touches Input UI)
+    
+    Uses two-step yield to avoid subtitle flickering:
+    1. First yield: audio + clear LRC (triggers .change() to clear subtitles)
+    2. Sleep 50ms (let audio load)
+    3. Second yield: skip audio + set actual LRC (triggers .change() to set subtitles)
+    """
     if current_batch_index >= total_batches - 1:
         gr.Warning(t("messages.at_last_batch"))
-        return [gr.update()] * 49  # 8 audio + 2 batch files/info + 1 index + 1 indicator + 2 btns + 1 status + 1 next_status + 8 scores + 8 codes + 8 lrc + 8 accordions + 1 restore
+        yield tuple([gr.update()] * 49)  # 8 audio + 2 batch files/info + 1 index + 1 indicator + 2 btns + 1 status + 1 next_status + 8 scores + 8 codes + 8 lrc + 8 accordions + 1 restore
+        return
     
     # Move to next batch
     new_batch_index = current_batch_index + 1
@@ -1817,26 +1978,23 @@ def navigate_to_next_batch(autogen_enabled, current_batch_index, total_batches, 
     # Load batch data from queue
     if new_batch_index not in batch_queue:
         gr.Warning(t("messages.batch_not_found", n=new_batch_index + 1))
-        return [gr.update()] * 49
+        yield tuple([gr.update()] * 49)
+        return
     
     batch_data = batch_queue[new_batch_index]
     audio_paths = batch_data.get("audio_paths", [])
     generation_info_text = batch_data.get("generation_info", "")
     
-    # Prepare audio outputs (up to 8) with subtitles
+    # Prepare audio outputs (up to 8)
     real_audio_paths = [p for p in audio_paths if not p.lower().endswith('.json')]
-    stored_subtitles = batch_data.get("subtitles", [None] * 8)
     
     audio_updates = []
     for idx in range(8):
         if idx < len(real_audio_paths):
             audio_path = real_audio_paths[idx]
-            # Use empty array [] if no subtitles stored (None doesn't clear properly)
-            subtitles_data = stored_subtitles[idx] if idx < len(stored_subtitles) and stored_subtitles[idx] else []
-            # Use gr.update to set both value and subtitles
-            audio_updates.append(gr.update(value=audio_path, subtitles=subtitles_data))
+            audio_updates.append(gr.update(value=audio_path))
         else:
-            audio_updates.append(gr.update(value=None, subtitles=[]))
+            audio_updates.append(gr.update(value=None))
     
     # Update batch indicator
     batch_indicator_text = update_batch_indicator(new_batch_index, total_batches)
@@ -1865,6 +2023,7 @@ def navigate_to_next_batch(autogen_enabled, current_batch_index, total_batches, 
     
     codes_display_updates = []
     lrc_display_updates = []
+    lrc_clear_updates = []  # For first yield - clear LRC
     details_accordion_updates = []
     for i in range(8):
         if stored_allow_lm_batch and isinstance(stored_codes, list):
@@ -1873,20 +2032,15 @@ def navigate_to_next_batch(autogen_enabled, current_batch_index, total_batches, 
             code_str = stored_codes if isinstance(stored_codes, str) and i == 0 else ""
         
         lrc_str = lrc_displays[i] if i < len(lrc_displays) else ""
-        score_str = score_displays[i] if i < len(score_displays) else ""
         
-        has_code = bool(code_str) and i < batch_size
-        has_lrc = bool(lrc_str)
-        has_score = bool(score_str)
-        
-        # Show accordion if any content exists
-        has_content = has_code or has_lrc or has_score
-        
-        codes_display_updates.append(gr.update(value=code_str, visible=has_code))
-        lrc_display_updates.append(gr.update(value=lrc_str, visible=has_lrc))
-        details_accordion_updates.append(gr.update(visible=has_content))
+        # Keep visible=True to ensure .change() event is properly triggered
+        codes_display_updates.append(gr.update(value=code_str, visible=True))
+        lrc_display_updates.append(gr.update(value=lrc_str, visible=True))
+        lrc_clear_updates.append(gr.update(value="", visible=True))  # Clear first
+        details_accordion_updates.append(gr.skip())  # Don't change accordion visibility
     
-    return (
+    # ============== STEP 1: Yield audio + CLEAR LRC ==============
+    yield (
         audio_updates[0], audio_updates[1], audio_updates[2], audio_updates[3],
         audio_updates[4], audio_updates[5], audio_updates[6], audio_updates[7],
         audio_paths, generation_info_text, new_batch_index, batch_indicator_text,
@@ -1896,11 +2050,39 @@ def navigate_to_next_batch(autogen_enabled, current_batch_index, total_batches, 
         score_displays[4], score_displays[5], score_displays[6], score_displays[7],
         codes_display_updates[0], codes_display_updates[1], codes_display_updates[2], codes_display_updates[3],
         codes_display_updates[4], codes_display_updates[5], codes_display_updates[6], codes_display_updates[7],
-        lrc_display_updates[0], lrc_display_updates[1], lrc_display_updates[2], lrc_display_updates[3],
-        lrc_display_updates[4], lrc_display_updates[5], lrc_display_updates[6], lrc_display_updates[7],
+        # LRC display - CLEAR first (triggers .change() to clear subtitles)
+        lrc_clear_updates[0], lrc_clear_updates[1], lrc_clear_updates[2], lrc_clear_updates[3],
+        lrc_clear_updates[4], lrc_clear_updates[5], lrc_clear_updates[6], lrc_clear_updates[7],
         details_accordion_updates[0], details_accordion_updates[1], details_accordion_updates[2], details_accordion_updates[3],
         details_accordion_updates[4], details_accordion_updates[5], details_accordion_updates[6], details_accordion_updates[7],
         gr.update(interactive=True),
+    )
+    
+    # Wait for audio to load before setting subtitles
+    time_module.sleep(0.05)
+    
+    # ============== STEP 2: Yield skip audio + SET actual LRC ==============
+    skip_audio = [gr.skip() for _ in range(8)]
+    skip_scores = [gr.skip() for _ in range(8)]
+    skip_codes = [gr.skip() for _ in range(8)]
+    skip_accordions = [gr.skip() for _ in range(8)]
+    
+    yield (
+        skip_audio[0], skip_audio[1], skip_audio[2], skip_audio[3],
+        skip_audio[4], skip_audio[5], skip_audio[6], skip_audio[7],
+        gr.skip(), gr.skip(), gr.skip(), gr.skip(),  # audio_paths, generation_info, batch_index, indicator
+        gr.skip(), gr.skip(),  # prev/next buttons
+        gr.skip(), gr.skip(),  # status, next_batch_status
+        skip_scores[0], skip_scores[1], skip_scores[2], skip_scores[3],
+        skip_scores[4], skip_scores[5], skip_scores[6], skip_scores[7],
+        skip_codes[0], skip_codes[1], skip_codes[2], skip_codes[3],
+        skip_codes[4], skip_codes[5], skip_codes[6], skip_codes[7],
+        # LRC display - SET actual content (triggers .change() to set subtitles)
+        lrc_display_updates[0], lrc_display_updates[1], lrc_display_updates[2], lrc_display_updates[3],
+        lrc_display_updates[4], lrc_display_updates[5], lrc_display_updates[6], lrc_display_updates[7],
+        skip_accordions[0], skip_accordions[1], skip_accordions[2], skip_accordions[3],
+        skip_accordions[4], skip_accordions[5], skip_accordions[6], skip_accordions[7],
+        gr.skip(),  # restore button
     )
 
 
