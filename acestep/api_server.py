@@ -4,7 +4,8 @@ Endpoints:
 - POST /release_task          Create music generation task
 - POST /query_result          Batch query task results
 - POST /create_random_sample  Generate random music parameters via LLM
-- POST /format_lyrics         Format and enhance lyrics/caption via LLM
+- POST /format_input          Format and enhance lyrics/caption via LLM
+- POST /random_sample         Get random sample from examples directory
 - GET  /v1/models             List available models
 - GET  /v1/audio              Download audio file
 - GET  /health                Health check
@@ -16,8 +17,10 @@ NOTE:
 from __future__ import annotations
 
 import asyncio
+import glob
 import json
 import os
+import random
 import sys
 import time
 import traceback
@@ -180,6 +183,11 @@ def _ensure_model_downloaded(model_name: str, checkpoint_dir: str) -> str:
             return _download_from_huggingface(repo_id, checkpoint_dir, model_name)
 
 
+def _get_project_root() -> str:
+    current_file = os.path.abspath(__file__)
+    return os.path.dirname(os.path.dirname(current_file))
+
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -194,6 +202,35 @@ STATUS_MAP = {"queued": 0, "running": 0, "succeeded": 1, "failed": 2}
 LM_DEFAULT_TEMPERATURE = 0.85
 LM_DEFAULT_CFG_SCALE = 2.5
 LM_DEFAULT_TOP_P = 0.9
+
+# =============================================================================
+# Example Data for Random Sample
+# =============================================================================
+
+SIMPLE_MODE_EXAMPLES_DIR = os.path.join(_get_project_root(), "examples", "simple_mode")
+CUSTOM_MODE_EXAMPLES_DIR = os.path.join(_get_project_root(), "examples", "text2music")
+
+
+def _load_all_examples(sample_mode: str = "simple_mode") -> List[Dict[str, Any]]:
+    """Load all example data files from the examples directory."""
+    examples = []
+    examples_dir = SIMPLE_MODE_EXAMPLES_DIR if sample_mode == "simple_mode" else CUSTOM_MODE_EXAMPLES_DIR
+    pattern = os.path.join(examples_dir, "example_*.json")
+
+    for filepath in glob.glob(pattern):
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                examples.append(data)
+        except Exception as e:
+            print(f"[API Server] Failed to load example file {filepath}: {e}")
+
+    return examples
+
+
+# Pre-load example data at module load time
+SIMPLE_EXAMPLE_DATA: List[Dict[str, Any]] = _load_all_examples(sample_mode="simple_mode")
+CUSTOM_EXAMPLE_DATA: List[Dict[str, Any]] = _load_all_examples(sample_mode="custom_mode")
 
 # =============================================================================
 # API Key Authentication
@@ -563,11 +600,6 @@ def _env_bool(name: str, default: bool) -> bool:
     if v is None:
         return default
     return v.strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def _get_project_root() -> str:
-    current_file = os.path.abspath(__file__)
-    return os.path.dirname(os.path.dirname(current_file))
 
 
 def _get_model_name(config_path: str) -> str:
@@ -2003,8 +2035,8 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"create_sample error: {str(e)}")
 
-    @app.post("/format_lyrics")
-    async def format_lyrics_endpoint(request: Request, _: None = Depends(verify_api_key)):
+    @app.post("/format_input")
+    async def format_input_endpoint(request: Request, _: None = Depends(verify_api_key)):
         """
         Format and enhance lyrics/caption via LLM.
 
@@ -2130,6 +2162,34 @@ def create_app() -> FastAPI:
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"format_sample error: {str(e)}")
+
+    @app.post("/random_sample")
+    async def random_sample_endpoint(request: Request, _: None = Depends(verify_api_key)):
+        """
+        Get random sample parameters from pre-loaded example data.
+
+        Returns a random example from the examples directory for form filling.
+        """
+        content_type = (request.headers.get("content-type") or "").lower()
+
+        if "json" in content_type:
+            body = await request.json()
+        else:
+            form = await request.form()
+            body = {k: v for k, v in form.items()}
+
+        sample_type = body.get("sample_type", "simple_mode") or "simple_mode"
+
+        if sample_type == "simple_mode":
+            example_data = SIMPLE_EXAMPLE_DATA
+        else:
+            example_data = CUSTOM_EXAMPLE_DATA
+
+        if not example_data:
+            raise HTTPException(status_code=500, detail="No example data available")
+
+        random_example = random.choice(example_data)
+        return random_example
 
     @app.get("/v1/audio")
     async def get_audio(path: str, _: None = Depends(verify_api_key)):
