@@ -1,0 +1,1911 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACE-Step Radio Station</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary: #e94560;
+            --primary-dark: #c73e54;
+            --secondary: #0f3460;
+            --bg-dark: #0a0a0f;
+            --bg-card: rgba(20, 20, 30, 0.8);
+            --glass: rgba(255, 255, 255, 0.05);
+            --text: #ffffff;
+            --text-muted: #888;
+            --accent-green: #00d26a;
+            --accent-yellow: #feca57;
+            --accent-blue: #4ecdc4;
+            --accent-red: #ff4757;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-dark);
+            min-height: 100vh;
+            color: var(--text);
+            overflow-x: hidden;
+        }
+
+        .bg-animation {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            background: 
+                radial-gradient(ellipse at 20% 80%, rgba(233, 69, 96, 0.15) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(15, 52, 96, 0.3) 0%, transparent 50%),
+                radial-gradient(ellipse at 40% 40%, rgba(78, 205, 196, 0.1) 0%, transparent 40%);
+            animation: bgPulse 8s ease-in-out infinite;
+        }
+
+        @keyframes bgPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.8; }
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            padding: 20px 0 30px;
+            position: relative;
+        }
+
+        .radio-tower {
+            font-size: 3rem;
+            margin-bottom: 10px;
+            animation: broadcast 2s ease-in-out infinite;
+            display: inline-block;
+        }
+
+        @keyframes broadcast {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.1); opacity: 0.8; }
+        }
+
+        header h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #fff 0%, var(--primary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -1px;
+        }
+
+        header p {
+            color: var(--text-muted);
+            margin-top: 8px;
+            font-size: 1rem;
+        }
+
+        .main-player {
+            background: var(--bg-card);
+            border-radius: 24px;
+            padding: 30px;
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 25px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .main-player::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--primary), var(--accent-blue), var(--accent-green));
+            animation: spectrum 3s linear infinite;
+            background-size: 200% 100%;
+        }
+
+        @keyframes spectrum {
+            0% { background-position: 0% 50%; }
+            100% { background-position: 200% 50%; }
+        }
+
+        .player-grid {
+            display: grid;
+            grid-template-columns: 200px 1fr 280px;
+            gap: 30px;
+            align-items: center;
+        }
+
+        .album-art-container {
+            position: relative;
+            width: 200px;
+            height: 200px;
+        }
+
+        .album-art {
+            width: 100%;
+            height: 100%;
+            border-radius: 16px;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 4rem;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(233, 69, 96, 0.3);
+        }
+
+        .album-art.playing {
+            animation: albumPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes albumPulse {
+            0%, 100% { transform: scale(1); box-shadow: 0 20px 40px rgba(233, 69, 96, 0.3); }
+            50% { transform: scale(1.02); box-shadow: 0 25px 50px rgba(233, 69, 96, 0.4); }
+        }
+
+        .visualizer-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 60%;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            gap: 3px;
+            padding: 20px;
+            background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .album-art.playing .visualizer-overlay {
+            opacity: 1;
+        }
+
+        .viz-bar {
+            width: 4px;
+            background: var(--accent-green);
+            border-radius: 2px;
+            animation: vizDance 0.5s ease-in-out infinite alternate;
+        }
+
+        .viz-bar:nth-child(2) { animation-delay: 0.1s; height: 30%; }
+        .viz-bar:nth-child(3) { animation-delay: 0.2s; height: 50%; }
+        .viz-bar:nth-child(4) { animation-delay: 0.3s; height: 40%; }
+        .viz-bar:nth-child(5) { animation-delay: 0.15s; height: 60%; }
+        .viz-bar:nth-child(6) { animation-delay: 0.25s; height: 35%; }
+        .viz-bar:nth-child(7) { animation-delay: 0.35s; height: 45%; }
+
+        @keyframes vizDance {
+            from { height: 20%; opacity: 0.5; }
+            to { height: 80%; opacity: 1; }
+        }
+
+        .track-info-center {
+            text-align: left;
+        }
+
+        .live-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: rgba(255, 0, 0, 0.2);
+            border: 1px solid rgba(255, 0, 0, 0.5);
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #ff4444;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+
+        .live-badge::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            background: #ff4444;
+            border-radius: 50%;
+            animation: livePulse 1.5s infinite;
+        }
+
+        @keyframes livePulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(0.8); }
+        }
+
+        .track-title {
+            font-size: 1.8rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+            line-height: 1.2;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .track-meta {
+            color: var(--text-muted);
+            font-size: 1rem;
+            margin-bottom: 15px;
+        }
+
+        .genre-tags {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .genre-tag {
+            padding: 6px 14px;
+            background: rgba(233, 69, 96, 0.2);
+            border: 1px solid rgba(233, 69, 96, 0.3);
+            border-radius: 20px;
+            font-size: 0.85rem;
+            color: var(--primary);
+        }
+
+        .controls-section {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .control-buttons {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+        }
+
+        .control-btn {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            border: none;
+            background: var(--glass);
+            color: var(--text);
+            font-size: 1.2rem;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .control-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            transform: scale(1.1);
+        }
+
+        .control-btn.play {
+            width: 70px;
+            height: 70px;
+            background: var(--primary);
+            font-size: 1.5rem;
+        }
+
+        .control-btn.play:hover {
+            background: var(--primary-dark);
+            transform: scale(1.05);
+        }
+
+        .radio-mode-toggle {
+            background: rgba(0, 210, 106, 0.1);
+            border: 1px solid rgba(0, 210, 106, 0.3);
+            border-radius: 12px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .radio-mode-toggle label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .radio-mode-toggle input {
+            display: none;
+        }
+
+        .toggle-switch {
+            width: 50px;
+            height: 26px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 13px;
+            position: relative;
+            transition: all 0.3s;
+        }
+
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            width: 22px;
+            height: 22px;
+            background: white;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: all 0.3s;
+        }
+
+        .radio-mode-toggle input:checked + .toggle-switch {
+            background: var(--accent-green);
+        }
+
+        .radio-mode-toggle input:checked + .toggle-switch::after {
+            left: 26px;
+        }
+
+        .radio-status {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 8px;
+        }
+
+        .progress-container {
+            margin-top: 20px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            overflow: hidden;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .progress-bar:hover {
+            transform: scaleY(1.5);
+        }
+
+        .progress-bar:hover .progress-fill {
+            background: linear-gradient(90deg, var(--primary), var(--accent-blue), var(--accent-green));
+            box-shadow: 0 0 10px rgba(233, 69, 96, 0.5);
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), var(--accent-blue));
+            border-radius: 3px;
+            transition: width 0.1s linear;
+            width: 0%;
+        }
+
+        .time-display {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .station-selector {
+            background: var(--bg-card);
+            border-radius: 20px;
+            padding: 25px;
+            margin-bottom: 25px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .section-title {
+            font-size: 1.2rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .preset-stations {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 25px;
+        }
+
+        .station-card {
+            background: var(--glass);
+            border: 2px solid transparent;
+            border-radius: 16px;
+            padding: 20px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .station-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--station-color, var(--primary));
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .station-card:hover {
+            transform: translateY(-3px);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .station-card.active {
+            border-color: var(--station-color, var(--primary));
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .station-card.active::before {
+            opacity: 1;
+        }
+
+        .station-icon {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        .station-name {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .station-desc {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .station-freq {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-family: monospace;
+        }
+
+        .genre-selection {
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding-top: 20px;
+        }
+
+        .genre-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .genre-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+            gap: 10px;
+        }
+
+        .genre-chip {
+            padding: 12px;
+            background: var(--glass);
+            border: 2px solid transparent;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+            font-size: 0.9rem;
+        }
+
+        .genre-chip:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .genre-chip.selected {
+            border-color: var(--primary);
+            background: rgba(233, 69, 96, 0.15);
+        }
+
+        .genre-chip .check {
+            display: none;
+            color: var(--primary);
+            margin-right: 4px;
+        }
+
+        .genre-chip.selected .check {
+            display: inline;
+        }
+
+        .queue-section {
+            background: var(--bg-card);
+            border-radius: 20px;
+            padding: 25px;
+            margin-bottom: 25px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .queue-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .queue-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 15px;
+            background: var(--glass);
+            border-radius: 12px;
+            transition: all 0.3s;
+        }
+
+        .queue-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .queue-item.playing {
+            border: 1px solid var(--primary);
+            background: rgba(233, 69, 96, 0.1);
+        }
+
+        .queue-item.failed {
+            border: 1px solid var(--accent-red);
+            opacity: 0.7;
+        }
+
+        .queue-number {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.85rem;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .queue-item.playing .queue-number {
+            background: var(--primary);
+        }
+
+        .queue-item.failed .queue-number {
+            background: var(--accent-red);
+        }
+
+        .queue-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .queue-title {
+            font-weight: 600;
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .queue-meta {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .queue-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-dot.ready { background: var(--accent-green); }
+        .status-dot.generating { background: var(--accent-yellow); animation: pulse 1.5s infinite; }
+        .status-dot.pending { background: var(--text-muted); }
+        .status-dot.failed { background: var(--accent-red); }
+
+        .settings-panel {
+            background: var(--bg-card);
+            border-radius: 20px;
+            padding: 25px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 25px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding-bottom: 15px;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 500;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .tab:hover {
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .tab.active {
+            color: var(--primary);
+            background: rgba(233, 69, 96, 0.1);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .input-group label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .input-group input,
+        .input-group select {
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(0, 0, 0, 0.3);
+            color: var(--text);
+            font-size: 0.9rem;
+            transition: all 0.3s;
+        }
+
+        .input-group input:focus,
+        .input-group select:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border-radius: 10px;
+            border: none;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+            transform: translateY(-2px);
+        }
+
+        .btn-secondary {
+            background: var(--glass);
+            color: var(--text);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .connection-bar {
+            display: flex;
+            gap: 20px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+
+        .connection-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+
+        .connection-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--text-muted);
+        }
+
+        .connection-dot.online { background: var(--accent-green); box-shadow: 0 0 10px var(--accent-green); }
+        .connection-dot.offline { background: #ff4757; }
+        .connection-dot.checking { background: var(--accent-yellow); animation: pulse 1s infinite; }
+
+        .stats-bar {
+            display: flex;
+            gap: 20px;
+            padding: 10px 0;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        @media (max-width: 1024px) {
+            .player-grid {
+                grid-template-columns: 1fr;
+                text-align: center;
+            }
+
+            .album-art-container {
+                margin: 0 auto;
+            }
+
+            .track-info-center {
+                text-align: center;
+            }
+
+            .genre-tags {
+                justify-content: center;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .preset-stations {
+                grid-template-columns: 1fr;
+            }
+
+            .genre-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .skip-overlay {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) scale(0);
+            background: rgba(0, 0, 0, 0.9);
+            padding: 30px 50px;
+            border-radius: 20px;
+            border: 2px solid var(--primary);
+            font-size: 1.5rem;
+            font-weight: 700;
+            z-index: 1000;
+            transition: transform 0.3s;
+            pointer-events: none;
+        }
+
+        .skip-overlay.show {
+            transform: translate(-50%, -50%) scale(1);
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-animation"></div>
+    
+    <div class="skip-overlay" id="skipOverlay">⏭ Skipping...</div>
+
+    <div class="container">
+        <header>
+            <div class="radio-tower">📻</div>
+            <h1>ACE-Step Radio</h1>
+            <p>AI-Powered Infinite Music Stream</p>
+        </header>
+
+        <div class="main-player">
+            <div class="player-grid">
+                <div class="album-art-container">
+                    <div class="album-art" id="albumArt">
+                        🎵
+                        <div class="visualizer-overlay">
+                            <div class="viz-bar"></div>
+                            <div class="viz-bar"></div>
+                            <div class="viz-bar"></div>
+                            <div class="viz-bar"></div>
+                            <div class="viz-bar"></div>
+                            <div class="viz-bar"></div>
+                            <div class="viz-bar"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="track-info-center">
+                    <div class="live-badge" id="liveBadge" style="display: none;">Live</div>
+                    <h2 class="track-title" id="trackTitle">Ready to Play</h2>
+                    <p class="track-meta" id="trackMeta">Select a station or genres to start</p>
+                    <div class="genre-tags" id="currentGenreTags"></div>
+                    
+                    <div class="progress-container">
+                        <div class="progress-bar" id="progressBar" onclick="seekTo(event)">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                        <div class="time-display">
+                            <span id="currentTime">0:00</span>
+                            <span id="totalTime">0:00</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="controls-section">
+                    <div class="control-buttons">
+                        <button class="control-btn" onclick="previousTrack()" title="Previous">⏮</button>
+                        <button class="control-btn play" id="playBtn" onclick="togglePlay()" title="Play/Pause">▶</button>
+                        <button class="control-btn" onclick="skipTrack()" title="Skip">⏭</button>
+                    </div>
+                    
+                    <div class="radio-mode-toggle">
+                        <label>
+                            <input type="checkbox" id="radioMode" checked onchange="toggleRadioMode()">
+                            <span class="toggle-switch"></span>
+                            <span>Radio Mode</span>
+                        </label>
+                        <div class="radio-status" id="radioStatus">Continuous play enabled</div>
+                    </div>
+                </div>
+            </div>
+
+            <audio id="audioPlayer" onended="onTrackEnded()" ontimeupdate="updateProgress()"></audio>
+        </div>
+
+        <div class="station-selector">
+            <div class="section-header">
+                <h3 class="section-title">📡 Radio Stations</h3>
+                <button class="btn btn-secondary" onclick="createCustomStation()">+ Custom Station</button>
+            </div>
+            
+            <div class="preset-stations" id="stationGrid"></div>
+
+            <div class="genre-selection">
+                <div class="genre-header">
+                    <h4>🎸 Or select genres for Mix Mode</h4>
+                    <button class="btn btn-secondary" onclick="clearGenreSelection()">Clear All</button>
+                </div>
+                <div class="genre-grid" id="genreGrid"></div>
+            </div>
+        </div>
+
+        <div class="queue-section">
+            <div class="section-header">
+                <h3 class="section-title">🎶 Up Next</h3>
+                <div class="stats-bar">
+                    <span class="stat-item" id="queueStats">0 ready | 0 generating | 0 pending</span>
+                </div>
+            </div>
+            <div class="queue-list" id="queueList">
+                <p style="color: var(--text-muted); text-align: center; padding: 40px;">Queue is empty. Enable Radio Mode to start generating.</p>
+            </div>
+        </div>
+
+        <div class="settings-panel">
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('api')">🔌 API Settings</div>
+                <div class="tab" onclick="switchTab('generation')">⚙️ Generation</div>
+                <div class="tab" onclick="switchTab('lyrics')">📝 Lyrics</div>
+            </div>
+
+            <div class="tab-content active" id="api-tab">
+                <div class="config-grid">
+                    <div class="input-group">
+                        <label>LM Studio URL</label>
+                        <input type="text" id="lmStudioUrl" value="http://localhost:1234/v1/chat/completions">
+                    </div>
+                    <div class="input-group">
+                        <label>ACE-Step (or proxy) URL</label>
+                        <input type="text" id="aceStepUrl" value="http://localhost:8002">
+                    </div>
+                    <div class="input-group">
+                        <label hidden>LM Studio API Key (optional)</label>
+                        <input type="hidden" id="lmApiKey" placeholder="Optional">
+                    </div>
+                    <div class="input-group">
+                        <label hidden>ACE-Step API Key (optional)</label>
+                        <input type="hidden" id="aceApiKey" placeholder="Optional">
+                    </div>
+                </div>
+                <div class="connection-bar">
+                    <div class="connection-item">
+                        <div class="connection-dot checking" id="lmDot"></div>
+                        <span>LM Studio</span>
+                    </div>
+                    <div class="connection-item">
+                        <div class="connection-dot checking" id="aceDot"></div>
+                        <span>ACE-Step</span>
+                    </div>
+                    <div class="connection-item">
+                        <div class="connection-dot checking" id="proxyDot"></div>
+                        <span>Proxy</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="generation-tab">
+                <div class="config-grid">
+                    <div class="input-group">
+                        <label>Default Duration (seconds)</label>
+                        <input type="number" id="defaultDuration" value="120" min="30" max="300">
+                    </div>
+                    <div class="input-group">
+                        <label>Inference Steps</label>
+                        <input type="number" id="inferenceSteps" value="8" min="1" max="50">
+                    </div>
+                    <div class="input-group">
+                        <label>Guidance Scale</label>
+                        <input type="number" id="guidanceScale" value="7.0" min="1" max="20" step="0.1">
+                    </div>
+                    <div class="input-group">
+                        <label>Queue Buffer Size</label>
+                        <input type="number" id="queueBuffer" value="2" min="1" max="3">
+                    </div>
+                    <div class="input-group">
+                        <label>Audio Format</label>
+                        <select id="audioFormat">
+                            <option value="mp3">MP3</option>
+                            <option value="wav">WAV</option>
+                            <option value="flac">FLAC</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="lyrics-tab">
+                <div class="config-grid">
+                    <div class="input-group">
+                        <label>Language</label>
+                        <select id="language">
+                            <option value="en">English</option>
+                            <option value="fi">Finnish</option>
+                            <option value="zh">Chinese</option>
+                            <option value="ja">Japanese</option>
+                            <option value="es">Spanish</option>
+                            <option value="fr">French</option>
+                            <option value="de">German</option>
+                            <option value="ko">Korean</option>
+                            <option value="it">Italian</option>
+                            <option value="pt">Portuguese</option>
+                            <option value="ru">Russian</option>
+                            <option value="sv">Swedish</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label>LM Temperature</label>
+                        <input type="number" id="lmTemperature" value="0.85" min="0" max="2" step="0.05">
+                    </div>
+                    <div class="input-group">
+                        <label>Include Vocals</label>
+                        <select id="includeVocals">
+                            <option value="true">Yes</option>
+                            <option value="false">Instrumental Only</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+                <button class="btn btn-secondary" onclick="testConnections()">Test Connections</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Station Presets
+        const stations = [
+            {
+                id: 'top-hits',
+                name: 'Top Hits FM',
+                icon: '🔥',
+                desc: 'Popular music across all genres',
+                color: '#e94560',
+                genres: ['pop', 'rock', 'electronic', 'hiphop'],
+                mood: 'upbeat, catchy, mainstream appeal'
+            },
+            {
+                id: 'chill-vibes',
+                name: 'Chill Vibes',
+                icon: '🌊',
+                desc: 'Relaxed beats for any time',
+                color: '#4ecdc4',
+                genres: ['lofi', 'ambient', 'jazz', 'rnb'],
+                mood: 'relaxed, smooth, mellow, atmospheric'
+            },
+            {
+                id: 'energy-boost',
+                name: 'Energy Boost',
+                icon: '⚡',
+                desc: 'High tempo motivation mix',
+                color: '#feca57',
+                genres: ['techno', 'house', 'trance', 'dubstep', 'drumnbass'],
+                mood: 'energetic, driving, intense, powerful'
+            },
+            {
+                id: 'retro-wave',
+                name: 'Retro Wave',
+                icon: '🌆',
+                desc: '80s inspired synth sounds',
+                color: '#ff6b9d',
+                genres: ['synthwave', 'disco', 'pop', 'electronic'],
+                mood: 'nostalgic, neon, retro-futuristic, cinematic'
+            },
+            {
+                id: 'focus-flow',
+                name: 'Focus Flow',
+                icon: '🧠',
+                desc: 'Concentration and study music',
+                color: '#a8e6cf',
+                genres: ['ambient', 'classical', 'lofi', 'newage'],
+                mood: 'calm, focused, minimal, peaceful'
+            },
+            {
+                id: 'indie-underground',
+                name: 'Indie Underground',
+                icon: '🎸',
+                desc: 'Alternative and indie discoveries',
+                color: '#dda0dd',
+                genres: ['indie', 'folk', 'rock', 'alternative'],
+                mood: 'authentic, raw, emotional, unique'
+            },
+            // NEW STATIONS
+            {
+                id: 'jazz-lounge',
+                name: 'Jazz Lounge',
+                icon: '🍸',
+                desc: 'Sophisticated sounds for elegant evenings',
+                color: '#ffd700',
+                genres: ['jazz', 'soul', 'blues', 'rnb'],
+                mood: 'sophisticated, smooth, classy, intimate'
+            },
+            {
+                id: 'metal-hell',
+                name: 'Metal Hell',
+                icon: '🤘',
+                desc: 'Heavy riffs and thunderous drums',
+                color: '#8b0000',
+                genres: ['metal', 'rock', 'industrial'],
+                mood: 'heavy, aggressive, epic, powerful'
+            },
+            {
+                id: 'edm-festival',
+                name: 'EDM Festival',
+                icon: '🎆',
+                desc: 'Main stage electronic dance music',
+                color: '#ff00ff',
+                genres: ['techno', 'house', 'trance', 'dubstep', 'electronic'],
+                mood: 'euphoric, explosive, communal, ecstatic'
+            },
+            {
+                id: 'acoustic-coffee',
+                name: 'Acoustic Coffee',
+                icon: '☕',
+                desc: 'Intimate singer-songwriter sessions',
+                color: '#8b4513',
+                genres: ['folk', 'indie', 'pop', 'country'],
+                mood: 'intimate, heartfelt, raw, storytelling'
+            },
+            {
+                id: 'hiphop-underground',
+                name: 'Hip Hop Underground',
+                icon: '🎤',
+                desc: 'Raw beats and real rhymes',
+                color: '#1a1a1a',
+                genres: ['hiphop', 'rnb', 'soul', 'jazz'],
+                mood: 'gritty, authentic, lyrical, conscious'
+            },
+            {
+                id: 'classical-elegance',
+                name: 'Classical Elegance',
+                icon: '🎻',
+                desc: 'Timeless orchestral masterpieces',
+                color: '#c9b037',
+                genres: ['classical', 'ambient', 'jazz'],
+                mood: 'elegant, timeless, grand, sophisticated'
+            }
+        ];
+
+        // Genre Database
+        const genres = [
+            { id: 'pop', name: 'Pop', icon: '🎤' },
+            { id: 'rock', name: 'Rock', icon: '🎸' },
+            { id: 'electronic', name: 'Electronic', icon: '🎹' },
+            { id: 'hiphop', name: 'Hip Hop', icon: '🎤' },
+            { id: 'jazz', name: 'Jazz', icon: '🎷' },
+            { id: 'classical', name: 'Classical', icon: '🎻' },
+            { id: 'folk', name: 'Folk', icon: '🪕' },
+            { id: 'rnb', name: 'R&B', icon: '💜' },
+            { id: 'lofi', name: 'Lo-Fi', icon: '📚' },
+            { id: 'synthwave', name: 'Synthwave', icon: '🌆' },
+            { id: 'ambient', name: 'Ambient', icon: '🌊' },
+            { id: 'techno', name: 'Techno', icon: '🔊' },
+            { id: 'house', name: 'House', icon: '🏠' },
+            { id: 'trance', name: 'Trance', icon: '🌌' },
+            { id: 'dubstep', name: 'Dubstep', icon: '🔥' },
+            { id: 'drumnbass', name: 'Drum & Bass', icon: '🥁' },
+            { id: 'indie', name: 'Indie', icon: '🌿' },
+            { id: 'metal', name: 'Metal', icon: '🤘' },
+            { id: 'country', name: 'Country', icon: '🤠' },
+            { id: 'latin', name: 'Latin', icon: '💃' },
+            { id: 'reggae', name: 'Reggae', icon: '🌴' },
+            { id: 'blues', name: 'Blues', icon: '🎺' },
+            { id: 'funk', name: 'Funk', icon: '🕺' },
+            { id: 'soul', name: 'Soul', icon: '✨' }
+        ];
+
+        // State
+        let currentStation = null;
+        let selectedGenres = new Set();
+        let songQueue = [];
+        let isPlaying = false;
+        let isRadioMode = true;
+        let currentTrack = null;
+        let queueInterval = null;
+        let isGenerating = false;
+        let generationQueue = []; // Queue of songs waiting to be generated
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            renderStations();
+            renderGenres();
+            loadSettings();
+            checkConnections();
+            setInterval(checkConnections, 10000);
+            toggleRadioMode();
+        });
+
+        function renderStations() {
+            const grid = document.getElementById('stationGrid');
+            grid.innerHTML = stations.map(s => `
+                <div class="station-card" data-station="${s.id}" onclick="selectStation('${s.id}')" style="--station-color: ${s.color}">
+                    <div class="station-freq">${(88 + Math.random() * 20).toFixed(1)} FM</div>
+                    <div class="station-icon">${s.icon}</div>
+                    <div class="station-name">${s.name}</div>
+                    <div class="station-desc">${s.desc}</div>
+                </div>
+            `).join('');
+        }
+
+        function renderGenres() {
+            const grid = document.getElementById('genreGrid');
+            grid.innerHTML = genres.map(g => `
+                <div class="genre-chip" data-genre="${g.id}" onclick="toggleGenre('${g.id}')">
+                    <span class="check">✓</span>
+                    <span>${g.icon} ${g.name}</span>
+                </div>
+            `).join('');
+        }
+
+        function selectStation(stationId) {
+            selectedGenres.clear();
+            document.querySelectorAll('.genre-chip').forEach(c => c.classList.remove('selected'));
+            
+            document.querySelectorAll('.station-card').forEach(c => c.classList.remove('active'));
+            document.querySelector(`[data-station="${stationId}"]`).classList.add('active');
+            
+            currentStation = stations.find(s => s.id === stationId);
+            
+            document.getElementById('trackTitle').textContent = currentStation.name;
+            document.getElementById('trackMeta').textContent = currentStation.desc;
+            document.getElementById('currentGenreTags').innerHTML = 
+                currentStation.genres.map(g => `<span class="genre-tag">${genres.find(x => x.id === g)?.name || g}</span>`).join('');
+            
+            // Clear and restart queue
+            songQueue = [];
+            generationQueue = [];
+            if (isRadioMode) {
+                fillQueue();
+            }
+            
+            if (!isPlaying) {
+                playNext();
+            }
+        }
+
+        function toggleGenre(genreId) {
+            document.querySelectorAll('.station-card').forEach(c => c.classList.remove('active'));
+            currentStation = null;
+            
+            const chip = document.querySelector(`[data-genre="${genreId}"]`);
+            if (selectedGenres.has(genreId)) {
+                selectedGenres.delete(genreId);
+                chip.classList.remove('selected');
+            } else {
+                selectedGenres.add(genreId);
+                chip.classList.add('selected');
+            }
+            
+            if (selectedGenres.size > 0) {
+                document.getElementById('trackTitle').textContent = 'Custom Mix';
+                document.getElementById('trackMeta').textContent = `${selectedGenres.size} genres selected`;
+                document.getElementById('currentGenreTags').innerHTML = 
+                    Array.from(selectedGenres).map(g => `<span class="genre-tag">${genres.find(x => x.id === g)?.name}</span>`).join('');
+                
+                if (isRadioMode) {
+                    fillQueue();
+                }
+            } else {
+                document.getElementById('trackTitle').textContent = 'Ready to Play';
+                document.getElementById('trackMeta').textContent = 'Select a station or genres to start';
+                document.getElementById('currentGenreTags').innerHTML = '';
+            }
+        }
+
+        function clearGenreSelection() {
+            selectedGenres.clear();
+            document.querySelectorAll('.genre-chip').forEach(c => c.classList.remove('selected'));
+            document.getElementById('trackTitle').textContent = 'Ready to Play';
+            document.getElementById('trackMeta').textContent = 'Select a station or genres to start';
+            document.getElementById('currentGenreTags').innerHTML = '';
+        }
+
+        function toggleRadioMode() {
+            isRadioMode = document.getElementById('radioMode').checked;
+            const status = document.getElementById('radioStatus');
+            
+            if (isRadioMode) {
+                status.textContent = 'Continuous play enabled - Queue will auto-fill';
+                document.getElementById('liveBadge').style.display = 'inline-flex';
+                if (currentStation || selectedGenres.size > 0) {
+                    fillQueue();
+                    queueInterval = setInterval(manageQueue, 10000);
+                }
+            } else {
+                status.textContent = 'Single track mode - Queue will not auto-fill';
+                document.getElementById('liveBadge').style.display = 'none';
+                clearInterval(queueInterval);
+            }
+        }
+
+        // Main queue management - only adds songs, doesn't generate yet
+        function fillQueue() {
+            if (!isRadioMode) return;
+            
+            const bufferSize = parseInt(document.getElementById('queueBuffer').value);
+            const activeCount = songQueue.filter(s => s.status === 'ready' || s.status === 'generating').length;
+            const needed = bufferSize - activeCount;
+            
+            // Only add if we need more and aren't already processing
+            if (needed > 0 && generationQueue.length === 0 && !isGenerating) {
+                for (let i = 0; i < needed; i++) {
+                    createSongItem();
+                }
+                // Start generation process
+                processGenerationQueue();
+            }
+        }
+
+        // Create a song item and add to generation queue
+        function createSongItem() {
+            let genre, theme;
+            
+            if (currentStation) {
+                const genreId = currentStation.genres[Math.floor(Math.random() * currentStation.genres.length)];
+                genre = genres.find(g => g.id === genreId) || genres[0];
+                theme = generateThemeForStation(currentStation);
+            } else if (selectedGenres.size > 0) {
+                const genreArray = Array.from(selectedGenres);
+                const genreId = genreArray[Math.floor(Math.random() * genreArray.length)];
+                genre = genres.find(g => g.id === genreId) || genres[0];
+                theme = generateThemeForGenre(genre);
+            } else {
+                return;
+            }
+            
+            if (!genre) {
+                console.error('No valid genre found');
+                return;
+            }
+            
+            const song = {
+                id: Date.now() + Math.random(),
+                genre: genre,
+                theme: theme,
+                status: 'pending',
+                station: currentStation?.name || 'Custom Mix'
+            };
+            
+            songQueue.push(song);
+            generationQueue.push(song);
+            renderQueue();
+        }
+
+        // Process generation queue one at a time
+        async function processGenerationQueue() {
+            if (isGenerating || generationQueue.length === 0) return;
+            
+            isGenerating = true;
+            const song = generationQueue.shift();
+            
+            song.status = 'generating';
+            renderQueue();
+            
+            try {
+                // Step 1: Generate lyrics
+                console.log(`Generating lyrics for: ${song.theme}`);
+                const lyrics = await generateLyrics(song.theme, song.genre);
+                if (!lyrics) throw new Error('Lyrics generation failed');
+                
+                // Step 2: Generate music (only after lyrics succeed)
+                console.log(`Generating music for: ${song.theme}`);
+                const music = await generateMusic(lyrics, song.genre);
+                if (!music) throw new Error('Music generation failed');
+                
+                // Success - mark as ready
+                song.status = 'ready';
+                song.url = music.url;
+                song.metadata = music.metadata;
+                song.lyrics = lyrics;
+                
+                console.log(`Completed: ${song.theme}`);
+                
+                // Auto-play if nothing is playing
+                if (!isPlaying && !currentTrack) {
+                    playNext();
+                }
+                
+            } catch (error) {
+                console.error('Generation failed:', error);
+                song.status = 'failed';
+                // Remove failed song after delay
+                setTimeout(() => {
+                    songQueue = songQueue.filter(s => s.id !== song.id);
+                    renderQueue();
+                }, 5000);
+            }
+            
+            isGenerating = false;
+            renderQueue();
+            
+            // Continue with next in queue if any
+            if (generationQueue.length > 0) {
+                processGenerationQueue();
+            } else if (isRadioMode) {
+                // Check if we need more songs
+                const bufferSize = parseInt(document.getElementById('queueBuffer').value);
+                const readyCount = songQueue.filter(s => s.status === 'ready').length;
+                if (readyCount < bufferSize) {
+                    fillQueue();
+                }
+            }
+        }
+
+        function generateThemeForStation(station) {
+            const themes = {
+                'top-hits': [
+                    'summer anthem', 'dance floor hit', 'breakup song', 'party starter', 'road trip vibes',
+                    'chart topper', 'viral sensation', 'club banger', 'singalong chorus', 'feel good hit'
+                ],
+                'chill-vibes': [
+                    'rainy day', 'coffee shop', 'sunset drive', 'late night thoughts', 'peaceful morning',
+                    'beach hammock', 'sunday afternoon', 'stargazing', 'yoga session', 'bubble bath'
+                ],
+                'energy-boost': [
+                    'workout pump', 'pre-game hype', 'running rhythm', 'motivation boost', 'power hour',
+                    'gym session', 'adrenaline rush', 'crossfit beast mode', 'marathon finish', 'victory lap'
+                ],
+                'retro-wave': [
+                    'neon nights', 'digital love', 'arcade memories', 'synth dreams', 'future past',
+                    'vhs nostalgia', 'mall food court', 'roller rink', 'back to the future', 'commodore 64'
+                ],
+                'focus-flow': [
+                    'deep work', 'study session', 'creative flow', 'meditation', 'reading ambient',
+                    'coding marathon', 'writing retreat', 'flow state', 'mindfulness', 'binaural focus'
+                ],
+                'indie-underground': [
+                    'garage band', 'vinyl find', 'concert night', 'road trip discovery', 'bedroom demo',
+                    'secret show', 'bandcamp gem', 'diy venue', 'local scene', 'unsigned hype'
+                ],
+                // NEW STATIONS
+                'jazz-lounge': [
+                    'speakeasy night', 'martini hour', 'sophisticated evening', 'piano bar', 'smoky vocals',
+                    'after dinner mint', 'silk and satin', 'midnight in paris', 'velvet curtains', 'brass section'
+                ],
+                'metal-hell': [
+                    'valhalla rising', 'demon hunter', 'thor\'s wrath', 'mosh pit carnage', 'dragon slayer',
+                    'vikings invade', 'black mass', 'iron throne', 'guitar hero', 'devil went down'
+                ],
+                'edm-festival': [
+                    'main stage drop', 'fireworks finale', 'crowd surge', 'glow stick madness', 'sunrise set',
+                    'bass cannon', 'confetti explosion', 'molly dreams', 'kandi trade', 'portal to tomorrow'
+                ],
+                'acoustic-coffee': [
+                    'open mic night', 'singer songwriter', 'broken strings', 'tip jar hopes', 'cover song',
+                    'original composition', 'coffee shop romance', 'fingers bleeding', 'wood grain', 'soft spoken'
+                ],
+                'hiphop-underground': [
+                    'cypher circle', 'freestyle battle', 'mixtape hustle', 'graffiti tags', 'boom bap',
+                    'underground king', 'street corner', 'vinyl crates', 'golden age', 'conscious flow'
+                ],
+                'classical-elegance': [
+                    'opera house', 'symphony hall', 'violin virtuoso', 'piano concerto', 'chamber music',
+                    'royal court', 'waltz ball', 'string quartet', 'maestro conductor', 'timeless masterpiece'
+                ]
+            };
+            
+            const stationThemes = themes[station.id] || ['original track', 'radio waves', 'broadcast signal'];
+            return `${stationThemes[Math.floor(Math.random() * stationThemes.length)]}, ${station.mood}`;
+        }
+
+        function generateThemeForGenre(genre) {
+            const themes = {
+                pop: ['summer love', 'dancing all night', 'new beginnings', 'young and free', 'heartbreak recovery', 'weekend vibes', 'city lights', 'falling in love'],
+                rock: ['rebellion', 'freedom', 'concert energy', 'standing strong', 'open road', 'midnight drive', 'breaking chains', 'electric guitar hero'],
+                electronic: ['neon city', 'digital dreams', 'underground rave', 'future visions', 'cyberpunk nights', 'synthetic heart', 'glitch in the matrix', 'binary soul'],
+                hiphop: ['street stories', 'success journey', 'crew loyalty', 'urban life', 'grinding daily', 'from the bottom', 'mic check', 'concrete jungle'],
+                jazz: ['midnight lounge', 'rainy evening', 'sophisticated romance', 'smoky club', 'saxophone serenade', 'blue notes', 'harlem nights', 'improvised dreams'],
+                classical: ['epic journey', 'nature symphony', 'royal ball', 'tragic love', 'mountain sunrise', 'waltz of seasons', 'moonlight sonata', 'orchestral dawn'],
+                folk: ['mountain home', 'wandering traveler', 'village festival', 'ancient tales', 'campfire stories', 'dusty road', 'harvest moon', 'whiskey and wool'],
+                rnb: ['slow jam romance', '2am thoughts', 'smooth seduction', 'soul searching', 'late night drive', 'velvet vocals', 'candlelight', 'emotional confession'],
+                lofi: ['rainy study session', 'late night thoughts', 'coffee shop vibes', 'peaceful morning', 'anime nostalgia', 'chill beats', 'bedroom window', 'midnight snack'],
+                synthwave: ['retro future', 'neon highway', 'arcade dreams', 'vhs memories', 'outrun sunset', 'cassette romance', 'mall goths', 'laser tag champions'],
+                ambient: ['deep space', 'underwater world', 'forest meditation', 'dream state', 'floating clouds', 'aurora borealis', 'desert wind', 'crystal caves'],
+                techno: ['warehouse rave', 'berlin night', 'industrial rhythm', 'machine soul', 'acid house', 'strobe lights', 'underground bunker', 'mechanical heartbeat'],
+                house: ['soulful groove', 'pool party', 'sunset session', 'underground club', 'garage shuffle', 'disco revival', 'four to the floor', 'chicago nights'],
+                trance: ['euphoric ascent', 'astral projection', 'ibiza sunrise', 'arpeggiated dreams', 'gatecrasher era', 'tunnel vision', 'stargazing', 'emotional peak'],
+                dubstep: ['bass drop', 'wobble warfare', 'skrillex memories', 'underground dungeon', 'robot dinosaurs', 'filthy growl', 'subwoofer destruction', 'moshpit madness'],
+                drumnbass: ['jungle fever', 'roller rewind', 'hospital records', 'liquid love', 'neurofunk nightmare', ' amen break', 'sub bass pressure', 'rave adrenaline'],
+                indie: ['bedroom pop', 'vinyl discovery', 'festival grass', 'obscure reference', 'pitchfork approved', 'twee romance', 'lo-fi aesthetic', 'underground hit'],
+                metal: ['thor\'s hammer', 'valhalla calling', 'demon slayer', 'mosh pit sacrifice', 'double bass blast', 'guitar shredding', 'dark throne', 'power metal quest'],
+                country: ['pickup truck', 'heartbreak honkytonk', 'dirt road', 'whiskey tears', 'rodeo nights', 'front porch swing', 'cheatin\' song', 'nashville dreams'],
+                latin: ['salsa heat', 'carnival rhythms', 'tropical passion', 'dance floor fire', 'latin lover', 'fiesta forever', 'samba school', 'rumba romance'],
+                reggae: ['island breeze', 'bob marley vibes', 'rasta philosophy', 'beach sunset', 'ganja meditation', 'one love', 'kingston town', 'roots and culture'],
+                blues: ['crossroads deal', 'delta swamp', 'devil\'s guitar', 'whiskey bottle', 'midnight train', 'soul sacrifice', 'bb king legacy', 'heartbreak hotel'],
+                funk: ['superfly swagger', 'james brown shuffle', 'pfunk mothership', 'bass slap', 'groove nation', 'soul train line', 'afro pick', 'disco inferno'],
+                soul: ['motown magic', 'aretha respect', 'stax volt', 'memphis horns', 'vocal acrobatics', 'church roots', 'civil rights anthem', 'love and pain']
+            };
+            
+            const genreThemes = themes[genre.id] || [`${genre.name} journey`, `${genre.name} dreams`, `${genre.name} nights`];
+            const theme = genreThemes[Math.floor(Math.random() * genreThemes.length)];
+            return `A ${genre.name} track about ${theme}`;
+        }
+
+        async function generateLyrics(theme, genre) {
+            if (!genre || !genre.name) {
+                genre = genres[0];
+            }
+            
+            const lang = document.getElementById('language').value;
+            const complexity = 'moderate';
+            const includeVocals = document.getElementById('includeVocals').value === 'true';
+            const apiKey = document.getElementById('lmApiKey').value;
+            
+            const systemPrompt = `You are a professional songwriter. Create ${complexity} song lyrics and music description.
+${includeVocals ? 'Include vocal melodies and lyrics.' : 'Instrumental only - focus on instrumentation.'}
+
+Respond in JSON:
+{
+  "caption": "Detailed music description (genre, instruments, mood, structure)",
+  "lyrics": "Full lyrics with sections marked [Verse], [Chorus], etc. or 'Instrumental' if no vocals",
+  "bpm": suggested tempo number,
+  "key": "musical key"
+}
+
+Genre: ${genre.name}
+Theme: ${theme}
+Language: ${lang}`;
+
+            const headers = {
+                'Content-Type': 'application/json'
+            };
+            
+            if (apiKey && apiKey.trim() !== '') {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            }
+
+            const response = await fetch(document.getElementById('lmStudioUrl').value, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({
+                    model: 'local-model',
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: `Create a song about: ${theme}` }
+                    ],
+                    temperature: parseFloat(document.getElementById('lmTemperature').value),
+                    max_tokens: 2000
+                })
+            });
+
+            if (!response.ok) throw new Error('LM Studio error');
+            
+            const data = await response.json();
+            let content = data.choices[0].message.content;
+            
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) content = jsonMatch[0];
+            
+            return JSON.parse(content);
+        }
+
+        async function generateMusic(lyrics, genre) {
+            if (!genre || !genre.name) {
+                genre = genres[0];
+            }
+            
+            const duration = parseInt(document.getElementById('defaultDuration').value);
+            const apiKey = document.getElementById('aceApiKey').value;
+            
+            const payload = {
+                prompt: lyrics.caption,
+                lyrics: lyrics.lyrics || '',
+                thinking: false,
+                vocal_language: document.getElementById('language').value,
+                audio_duration: duration,
+                inference_steps: parseInt(document.getElementById('inferenceSteps').value),
+                guidance_scale: parseFloat(document.getElementById('guidanceScale').value),
+                use_random_seed: true,
+                audio_format: document.getElementById('audioFormat').value
+            };
+            
+            if (lyrics.bpm) payload.bpm = lyrics.bpm;
+            if (lyrics.key) payload.key_scale = lyrics.key;
+            
+            const response = await fetch(document.getElementById('aceStepUrl').value + '/release_task', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': apiKey ? `Bearer ${apiKey}` : ''
+                },
+                body: JSON.stringify(payload)
+            });
+            
+            if (!response.ok) throw new Error('ACE-Step error');
+            
+            const data = await response.json();
+            if (data.code !== 200) throw new Error(data.error);
+            
+            return await pollResult(data.data.task_id);
+        }
+
+        function pollResult(taskId) {
+            return new Promise((resolve, reject) => {
+                const check = async () => {
+                    try {
+                        const response = await fetch(document.getElementById('aceStepUrl').value + '/query_result', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ task_id_list: [taskId] })
+                        });
+                        
+                        const data = await response.json();
+                        if (data.code !== 200 || !data.data?.length) {
+                            setTimeout(check, 2000);
+                            return;
+                        }
+                        
+                        const task = data.data[0];
+                        
+                        if (task.status === 1) {
+                            const result = JSON.parse(task.result);
+                            if (result?.length > 0) {
+                                resolve({
+                                    url: document.getElementById('aceStepUrl').value + result[0].file,
+                                    metadata: result[0]
+                                });
+                            } else {
+                                reject(new Error('No result'));
+                            }
+                        } else if (task.status === 2) {
+                            reject(new Error('Generation failed'));
+                        } else {
+                            setTimeout(check, 2000);
+                        }
+                    } catch (e) {
+                        setTimeout(check, 2000);
+                    }
+                };
+                check();
+            });
+        }
+
+        function playNext() {
+            const ready = songQueue.find(s => s.status === 'ready');
+            if (!ready) {
+                if (isRadioMode && (currentStation || selectedGenres.size > 0)) {
+                    document.getElementById('trackTitle').textContent = 'Generating...';
+                    document.getElementById('trackMeta').textContent = 'Please wait for the next track';
+                    // Trigger fill queue if not already running
+                    if (generationQueue.length === 0 && !isGenerating) {
+                        fillQueue();
+                    }
+                }
+                return;
+            }
+            
+            currentTrack = ready;
+            songQueue = songQueue.filter(s => s.id !== ready.id);
+            
+            const player = document.getElementById('audioPlayer');
+            player.src = ready.url;
+            
+            document.getElementById('trackTitle').textContent = ready.theme;
+            document.getElementById('trackMeta').textContent = `${ready.genre?.name || 'Unknown'} • ${ready.station || 'Radio'}`;
+            document.getElementById('albumArt').classList.add('playing');
+            document.getElementById('playBtn').innerHTML = '⏸';
+            
+            player.play();
+            isPlaying = true;
+            
+            renderQueue();
+            
+            // Fill queue after playing
+            if (isRadioMode) {
+                setTimeout(fillQueue, 1000);
+            }
+        }
+
+        function togglePlay() {
+            const player = document.getElementById('audioPlayer');
+            const btn = document.getElementById('playBtn');
+            
+            if (isPlaying) {
+                player.pause();
+                btn.innerHTML = '▶';
+                document.getElementById('albumArt').classList.remove('playing');
+                isPlaying = false;
+            } else {
+                if (!currentTrack) {
+                    playNext();
+                } else {
+                    player.play();
+                    btn.innerHTML = '⏸';
+                    document.getElementById('albumArt').classList.add('playing');
+                    isPlaying = true;
+                }
+            }
+        }
+
+        function skipTrack() {
+            const overlay = document.getElementById('skipOverlay');
+            overlay.classList.add('show');
+            setTimeout(() => overlay.classList.remove('show'), 500);
+            
+            playNext();
+        }
+
+        function previousTrack() {
+            const player = document.getElementById('audioPlayer');
+            player.currentTime = 0;
+        }
+
+        function onTrackEnded() {
+            document.getElementById('albumArt').classList.remove('playing');
+            document.getElementById('playBtn').innerHTML = '▶';
+            isPlaying = false;
+            currentTrack = null;
+            
+            if (isRadioMode) {
+                playNext();
+            }
+        }
+
+        function updateProgress() {
+            const player = document.getElementById('audioPlayer');
+            if (player.duration) {
+                const percent = (player.currentTime / player.duration) * 100;
+                document.getElementById('progressFill').style.width = percent + '%';
+                document.getElementById('currentTime').textContent = formatTime(player.currentTime);
+                document.getElementById('totalTime').textContent = formatTime(player.duration);
+            }
+        }
+
+        function seekTo(event) {
+            const player = document.getElementById('audioPlayer');
+            if (!player.duration) return;
+            
+            const progressBar = document.getElementById('progressBar');
+            const rect = progressBar.getBoundingClientRect();
+            const clickX = event.clientX - rect.left;
+            const percentage = clickX / rect.width;
+            const newTime = percentage * player.duration;
+            
+            player.currentTime = newTime;
+            document.getElementById('progressFill').style.width = (percentage * 100) + '%';
+        }
+
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function renderQueue() {
+            const list = document.getElementById('queueList');
+            const ready = songQueue.filter(s => s.status === 'ready').length;
+            const generating = songQueue.filter(s => s.status === 'generating').length;
+            const pending = songQueue.filter(s => s.status === 'pending').length;
+            const failed = songQueue.filter(s => s.status === 'failed').length;
+            
+            document.getElementById('queueStats').textContent = 
+                `${ready} ready | ${generating} generating | ${pending} pending${failed > 0 ? ` | ${failed} failed` : ''}`;
+            
+            if (songQueue.length === 0) {
+                list.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 40px;">Queue is empty. Enable Radio Mode to start generating.</p>';
+                return;
+            }
+            
+            list.innerHTML = songQueue.map((song, index) => {
+                const genreName = song.genre?.name || 'Unknown';
+                const genreIcon = song.genre?.icon || '🎵';
+                const isFailed = song.status === 'failed';
+                
+                return `
+                <div class="queue-item ${song.status === 'playing' ? 'playing' : ''} ${isFailed ? 'failed' : ''}">
+                    <div class="queue-number">${index + 1}</div>
+                    <div class="queue-info">
+                        <div class="queue-title">${isFailed ? '⚠️ ' : ''}${song.theme || 'Untitled'}</div>
+                        <div class="queue-meta">${genreIcon} ${genreName} • ${song.station || 'Radio'}</div>
+                    </div>
+                    <div class="queue-status">
+                        <div class="status-dot ${song.status}"></div>
+                        <span>${song.status === 'ready' ? 'Ready' : song.status === 'generating' ? 'Generating...' : song.status === 'failed' ? 'Failed' : 'Waiting'}</span>
+                    </div>
+                </div>
+            `}).join('');
+        }
+
+        function manageQueue() {
+            if (!isRadioMode) return;
+            
+            const bufferSize = parseInt(document.getElementById('queueBuffer').value);
+            const readyCount = songQueue.filter(s => s.status === 'ready').length;
+            
+            // Only fill if we have room and aren't processing
+            if (readyCount < bufferSize && generationQueue.length === 0 && !isGenerating) {
+                fillQueue();
+            }
+        }
+
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
+            event.target.classList.add('active');
+            document.getElementById(tab + '-tab').classList.add('active');
+        }
+
+        async function checkConnections() {
+            const lmUrl = document.getElementById('lmStudioUrl').value.replace('/chat/completions', '/models');
+            const aceUrl = document.getElementById('aceStepUrl').value + '/health';
+            
+            try {
+                const lmRes = await fetch(lmUrl);
+                document.getElementById('lmDot').className = 'connection-dot ' + (lmRes.ok ? 'online' : 'offline');
+            } catch {
+                document.getElementById('lmDot').className = 'connection-dot offline';
+            }
+            
+            try {
+                const aceRes = await fetch(aceUrl);
+                document.getElementById('aceDot').className = 'connection-dot ' + (aceRes.ok ? 'online' : 'offline');
+                document.getElementById('proxyDot').className = 'connection-dot ' + (aceRes.ok ? 'online' : 'offline');
+            } catch {
+                document.getElementById('aceDot').className = 'connection-dot offline';
+                document.getElementById('proxyDot').className = 'connection-dot offline';
+            }
+        }
+
+        function testConnections() {
+            checkConnections();
+        }
+
+
+        function saveSettings() {
+            const settings = {
+                lmStudioUrl: document.getElementById('lmStudioUrl').value,
+                aceStepUrl: document.getElementById('aceStepUrl').value,
+                language: document.getElementById('language').value,
+                defaultDuration: document.getElementById('defaultDuration').value,
+                inferenceSteps: document.getElementById('inferenceSteps').value,
+                queueBuffer: document.getElementById('queueBuffer').value
+            };
+            localStorage.setItem('aceStepRadioSettings', JSON.stringify(settings));
+            alert('Settings saved!');
+        }
+
+        function loadSettings() {
+            const saved = localStorage.getItem('aceStepRadioSettings');
+            if (saved) {
+                const s = JSON.parse(saved);
+                if (s.lmStudioUrl) document.getElementById('lmStudioUrl').value = s.lmStudioUrl;
+                if (s.aceStepUrl) document.getElementById('aceStepUrl').value = s.aceStepUrl;
+                if (s.language) document.getElementById('language').value = s.language;
+                if (s.defaultDuration) document.getElementById('defaultDuration').value = s.defaultDuration;
+                if (s.inferenceSteps) document.getElementById('inferenceSteps').value = s.inferenceSteps;
+                if (s.queueBuffer) document.getElementById('queueBuffer').value = s.queueBuffer;
+            }
+        }
+
+        function createCustomStation() {
+            const name = prompt('Station name:');
+            if (!name) return;
+            
+            const desc = prompt('Description:') || 'Custom mix';
+            const icon = prompt('Icon (emoji):') || '🎵';
+            
+            const newStation = {
+                id: 'custom-' + Date.now(),
+                name: name,
+                icon: icon,
+                desc: desc,
+                color: '#' + Math.floor(Math.random()*16777215).toString(16),
+                genres: Array.from(selectedGenres).length > 0 ? Array.from(selectedGenres) : ['pop', 'rock'],
+                mood: 'custom vibes'
+            };
+            
+            stations.push(newStation);
+            renderStations();
+            selectStation(newStation.id);
+        }
+    </script>
+</body>
+</html>
