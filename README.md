@@ -1,3 +1,43 @@
+
+https://github.com/user-attachments/assets/0a575917-d03d-4c96-80d1-dcf0306d5607
+
+```markdown
+## 🚀 Quick Start
+
+### 1. Install Dependencies
+
+Install Python packages for the proxy server:
+
+```bash
+pip install flask flask-cors requests
+```
+
+### 2. Start the Services
+
+Run each command in a separate terminal window:
+
+| Service | Command | Port |
+|---------|---------|------|
+| **ACE-Step API** | `uv run acestep-api --port 8001` | `8001` |
+| **Proxy Server** | `python proxy-server.py` | `8002` *(default)* |
+
+> 💡 **Tip:** Keep both terminals running while using the radio.
+
+### 3. Configure LM Studio
+
+1. Launch **LM Studio**
+2. Load your preferred LLM:
+   - **English lyrics:** `lfm2.5-1.2b-instruct` (lightweight, fast)
+   - **Other languages:** Larger models recommended for better quality
+
+### 4. Launch the Radio
+
+Simply open `RADIO.html` in your browser.
+
+----------------------------------------------------------------------
+
+
+
 <h1 align="center">ACE-Step 1.5</h1>
 <h1 align="center">Pushing the Boundaries of Open-Source Music Generation</h1>
 <p align="center">
