@@ -5,6 +5,8 @@ https://github.com/user-attachments/assets/0a575917-d03d-4c96-80d1-dcf0306d5607
 
 ### 1. Install Dependencies
 
+You should already have Ace-Step 1.5 installed.
+
 Install Python packages for the proxy server:
 
 ```bash
