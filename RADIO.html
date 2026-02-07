@@ -953,6 +953,7 @@
                 <div class="tab active" onclick="switchTab('api')">🔌 API Settings</div>
                 <div class="tab" onclick="switchTab('generation')">⚙️ Generation</div>
                 <div class="tab" onclick="switchTab('lyrics')">📝 Lyrics</div>
+                <div class="tab" onclick="switchTab('history')">📜 History</div>
             </div>
 
             <div class="tab-content active" id="api-tab">
@@ -961,6 +962,7 @@
                         <label>LM Studio URL</label>
                         <input type="text" id="lmStudioUrl" value="http://localhost:1234/v1/chat/completions">
                     </div>
+
                     <div class="input-group">
                         <label>ACE-Step (or proxy) URL</label>
                         <input type="text" id="aceStepUrl" value="http://localhost:8002">
@@ -1049,6 +1051,12 @@
                             <option value="false">Instrumental Only</option>
                         </select>
                     </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="history-tab">
+                <div class="queue-list" id="historyList">
+                    <p style="color: var(--text-muted); text-align: center;">No songs played yet.</p>
                 </div>
             </div>
 
@@ -1211,6 +1219,7 @@
         let queueInterval = null;
         let isGenerating = false;
         let generationQueue = []; // Queue of songs waiting to be generated
+        let playHistory = [];
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -1404,6 +1413,8 @@
                 song.url = music.url;
                 song.metadata = music.metadata;
                 song.lyrics = lyrics;
+
+                song.title = lyrics.title || song.theme;
                 
                 console.log(`Completed: ${song.theme}`);
                 
@@ -1539,19 +1550,20 @@
             const apiKey = document.getElementById('lmApiKey').value;
             
             const systemPrompt = `You are a professional songwriter. Create ${complexity} song lyrics and music description.
-${includeVocals ? 'Include vocal melodies and lyrics.' : 'Instrumental only - focus on instrumentation.'}
+            ${includeVocals ? 'Include vocal melodies and lyrics.' : 'Instrumental only - focus on instrumentation.'}
 
-Respond in JSON:
-{
-  "caption": "Detailed music description (genre, instruments, mood, structure)",
-  "lyrics": "Full lyrics with sections marked [Verse], [Chorus], etc. or 'Instrumental' if no vocals",
-  "bpm": suggested tempo number,
-  "key": "musical key"
-}
+            Respond in JSON:
+            {
+            "title": "A short, creative, unique title for this song (do not use 'Song about...')", 
+            "caption": "Detailed music description (genre, instruments, mood, structure)",
+            "lyrics": "Full lyrics with sections marked [Verse], [Chorus], etc. or 'Instrumental' if no vocals",
+            "bpm": suggested tempo number,
+            "key": "musical key"
+            }
 
-Genre: ${genre.name}
-Theme: ${theme}
-Language: ${lang}`;
+            Genre: ${genre.name}
+            Theme: ${theme}
+            Language: ${lang}`;
 
             const headers = {
                 'Content-Type': 'application/json'
@@ -1687,7 +1699,7 @@ Language: ${lang}`;
             const player = document.getElementById('audioPlayer');
             player.src = ready.url;
             
-            document.getElementById('trackTitle').textContent = ready.theme;
+            document.getElementById('trackTitle').textContent = ready.title || ready.theme; 
             document.getElementById('trackMeta').textContent = `${ready.genre?.name || 'Unknown'} • ${ready.station || 'Radio'}`;
             document.getElementById('albumArt').classList.add('playing');
             document.getElementById('playBtn').innerHTML = '⏸';
@@ -1741,11 +1753,48 @@ Language: ${lang}`;
             document.getElementById('albumArt').classList.remove('playing');
             document.getElementById('playBtn').innerHTML = '▶';
             isPlaying = false;
+            
+            // NEW: Add to history before clearing currentTrack
+            if (currentTrack) {
+                addToHistory(currentTrack);
+            }
+            
             currentTrack = null;
             
             if (isRadioMode) {
                 playNext();
             }
+        }
+
+        // NEW FUNCTION: Handle History rendering
+        function addToHistory(song) {
+            playHistory.unshift(song); // Add to top of list
+            // Limit history to last 50 songs to prevent memory issues
+            if (playHistory.length > 50) playHistory.pop();
+            renderHistory();
+        }
+
+        function renderHistory() {
+            const list = document.getElementById('historyList');
+            if (playHistory.length === 0) {
+                list.innerHTML = '<p style="color: var(--text-muted); text-align: center;">No songs played yet.</p>';
+                return;
+            }
+
+            list.innerHTML = playHistory.map((song, index) => `
+                <div class="queue-item">
+                    <div class="queue-number">#${playHistory.length - index}</div>
+                    <div class="queue-info">
+                        <div class="queue-title">${song.title}</div>
+                        <div class="queue-meta">${song.genre?.name} • ${song.station}</div>
+                    </div>
+                    <div class="queue-status">
+                        <a href="${song.url}" download="${song.title}.wav" class="btn btn-secondary" style="padding: 5px 15px; font-size: 0.8rem;">
+                            💾 Save
+                        </a>
+                    </div>
+                </div>
+            `).join('');
         }
 
         function updateProgress() {
@@ -1802,8 +1851,7 @@ Language: ${lang}`;
                 <div class="queue-item ${song.status === 'playing' ? 'playing' : ''} ${isFailed ? 'failed' : ''}">
                     <div class="queue-number">${index + 1}</div>
                     <div class="queue-info">
-                        <div class="queue-title">${isFailed ? '⚠️ ' : ''}${song.theme || 'Untitled'}</div>
-                        <div class="queue-meta">${genreIcon} ${genreName} • ${song.station || 'Radio'}</div>
+                    <div class="queue-title">${isFailed ? '⚠️ ' : ''}${song.title || song.theme || 'Untitled'}</div> 
                     </div>
                     <div class="queue-status">
                         <div class="status-dot ${song.status}"></div>
