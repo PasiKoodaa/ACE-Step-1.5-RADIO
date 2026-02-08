@@ -421,12 +421,12 @@ class AceStepHandler:
             self.offload_to_cpu = offload_to_cpu
             self.offload_dit_to_cpu = offload_dit_to_cpu
             self.compiled = compile_model
-            # Set dtype based on device: bf16 for CUDA/XPU, fp16 for MPS, fp32 for CPU
-            # MPS fp16 is generally faster and more stable than bf16 on Apple Silicon.
+            # Set dtype based on device: bf16 for CUDA/XPU, fp32 for MPS/CPU
+            # MPS does not support bfloat16 natively, and converting bfloat16-trained
+            # weights to float16 causes NaN/Inf due to the narrower exponent range.
+            # Use float32 on MPS for numerical stability.
             if device in ["cuda", "xpu"]:
                 self.dtype = torch.bfloat16
-            elif device == "mps":
-                self.dtype = torch.float16
             else:
                 self.dtype = torch.float32
             self.quantization = quantization

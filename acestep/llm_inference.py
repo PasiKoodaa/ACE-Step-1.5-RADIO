@@ -56,7 +56,7 @@ class LLMHandler:
         self.device = "cpu"
         self.dtype = torch.float32
         self.offload_to_cpu = False
-        self.disable_tqdm = os.environ.get("ACESTEP_DISABLE_TQDM", "").lower() in ("1", "true", "yes") or not sys.stderr.isatty()
+        self.disable_tqdm = os.environ.get("ACESTEP_DISABLE_TQDM", "").lower() in ("1", "true", "yes") or not (hasattr(sys.stderr, 'isatty') and sys.stderr.isatty())
 
         # HuggingFace Space persistent storage support
         if persistent_storage_path is None and self.IS_HUGGINGFACE_SPACE:
@@ -2592,10 +2592,54 @@ class LLMHandler:
             logger.info(f"Loading MLX model from {model_path}")
             start_time = time.time()
 
-            # mlx-lm's load() can read HuggingFace safetensors directly
-            # It uses config.json to determine model architecture (e.g., Qwen3)
-            # and the model's sanitize() method handles weight key remapping
-            self._mlx_model, _ = mlx_load(model_path)
+            # Try standard mlx-lm load first
+            try:
+                self._mlx_model, _ = mlx_load(model_path)
+            except Exception as first_err:
+                # The ACE-Step 5Hz LM checkpoints store safetensors keys without
+                # the "model." prefix (e.g. "layers.0.xxx" instead of
+                # "model.layers.0.xxx") which is what mlx-lm's Qwen3 model
+                # expects.  When the standard load fails we retry with the
+                # prefix remapped.
+                logger.info(
+                    f"Standard MLX load failed ({first_err}), "
+                    "retrying with 'model.' prefix remapping..."
+                )
+                import glob as _glob
+                from pathlib import Path
+                from mlx_lm.utils import load_model, load_config, load_tokenizer, _get_classes
+
+                _model_path = Path(model_path)
+                config = load_config(_model_path)
+
+                # Load raw weights from safetensors
+                weight_files = _glob.glob(str(_model_path / "model*.safetensors"))
+                if not weight_files:
+                    raise FileNotFoundError(f"No safetensors found in {model_path}") from first_err
+
+                weights = {}
+                for wf in weight_files:
+                    weights.update(mx.load(wf))
+
+                # Check if keys need "model." prefix by inspecting first key
+                sample_key = next(iter(weights))
+                if not sample_key.startswith("model."):
+                    logger.info("Adding 'model.' prefix to weight keys for MLX compatibility")
+                    weights = {f"model.{k}": v for k, v in weights.items()}
+
+                # Build model from config
+                model_class, model_args_class = _get_classes(config=config)
+                model_args = model_args_class.from_dict(config)
+                model = model_class(model_args)
+
+                if hasattr(model, "sanitize"):
+                    weights = model.sanitize(weights)
+
+                model.load_weights(list(weights.items()), strict=True)
+                mx.eval(model.parameters())
+                model.eval()
+                self._mlx_model = model
+
             mx.eval(self._mlx_model.parameters())
             # Store model path for get_hf_model_for_scoring
             self._mlx_model_path = model_path
