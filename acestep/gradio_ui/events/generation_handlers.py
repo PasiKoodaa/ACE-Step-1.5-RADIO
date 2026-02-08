@@ -462,7 +462,7 @@ def init_service_wrapper(dit_handler, llm_handler, checkpoint, config_path, devi
             backend=backend,
             device=device,
             offload_to_cpu=offload_to_cpu,
-            dtype=dit_handler.dtype,
+            dtype=None,
         )
         
         if lm_success:
@@ -825,6 +825,7 @@ def handle_create_sample(
         - audio_duration
         - key_scale
         - vocal_language
+        - simple_vocal_language
         - time_signature
         - instrumental_checkbox
         - caption_accordion (open)
@@ -845,6 +846,7 @@ def handle_create_sample(
             gr.update(),  # audio_duration - no change
             gr.update(),  # key_scale - no change
             gr.update(),  # vocal_language - no change
+            gr.update(),  # simple vocal_language - no change
             gr.update(),  # time_signature - no change
             gr.update(),  # instrumental_checkbox - no change
             gr.update(),  # caption_accordion - no change
@@ -1048,4 +1050,3 @@ def handle_format_sample(
         True,  # is_format_caption_state - True (LM-formatted)
         result.status_message,  # status_output
     )
-
