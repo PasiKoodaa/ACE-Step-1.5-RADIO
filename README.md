@@ -39,6 +39,33 @@ Run each command in a separate terminal window:
 
 Simply open `RADIO.html` in your browser.
 
+### 5. Cover Mode (Experimental)
+
+> ⚠️ **Experimental / vibe-coded feature:** This mode might be fast-moving and may change. Expect rough edges.
+
+In `RADIO.html` open **Settings -> Cover** and configure:
+
+- **Cover Mode**
+  - `Off`: normal radio generation only
+  - `Covers Only`: continuous cover generation
+  - `Sometimes Cover`: mixed stream (normal songs + random covers)
+- **Cover Source (folder or file path)**
+  - Folder paths are scanned recursively for audio files
+  - You can also provide a single file path for repeated covers of one song
+- **Structure Adherence** controls `audio_cover_strength`
+- **If Original Lyrics Missing**
+  - Use embedded/sidecar lyrics if available (`USLT/ULST`, `.lrc`, `.txt`)
+  - Fallback to auto-generated lyrics or instrumental mode
+- **Cover Vocal Target**
+  - `Auto`, `Female Lead`, `Male Lead`, `Duet`
+  - Adds explicit vocal guidance to the generation caption
+
+For mixed mode, tune:
+- `Mixed Cover Chance Min (%)`
+- `Mixed Cover Chance Max (%)`
+
+Tip: Click **Save Settings** to persist cover options in local storage.
+
 ----------------------------------------------------------------------
 
 
@@ -740,11 +767,11 @@ This project is licensed under [MIT](./LICENSE)
 
 ACE-Step enables original music generation across diverse genres, with applications in creative production, education, and entertainment. While designed to support positive and artistic use cases, we acknowledge potential risks such as unintentional copyright infringement due to stylistic similarity, inappropriate blending of cultural elements, and misuse for generating harmful content. To ensure responsible use, we encourage users to verify the originality of generated works, clearly disclose AI involvement, and obtain appropriate permissions when adapting protected styles or materials. By using ACE-Step, you agree to uphold these principles and respect artistic integrity, cultural diversity, and legal compliance. The authors are not responsible for any misuse of the model, including but not limited to copyright violations, cultural insensitivity, or the generation of harmful content.
 
-🔔 Important Notice  
-The only official website for the ACE-Step project is our GitHub Pages site.    
- We do not operate any other websites.  
+🔔 Important Notice
+The only official website for the ACE-Step project is our GitHub Pages site.
+ We do not operate any other websites.
 🚫 Fake domains include but are not limited to:
-ac\*\*p.com, a\*\*p.org, a\*\*\*c.org  
+ac\*\*p.com, a\*\*p.org, a\*\*\*c.org
 ⚠️ Please be cautious. Do not visit, trust, or make payments on any of those sites.
 
 ## 🙏 Acknowledgements
@@ -759,7 +786,7 @@ If you find this project useful for your research, please consider citing:
 ```BibTeX
 @misc{gong2026acestep,
 	title={ACE-Step 1.5: Pushing the Boundaries of Open-Source Music Generation},
-	author={Junmin Gong, Yulin Song, Wenxiao Zhao, Sen Wang, Shengyuan Xu, Jing Guo}, 
+	author={Junmin Gong, Yulin Song, Wenxiao Zhao, Sen Wang, Shengyuan Xu, Jing Guo},
 	howpublished={\url{https://github.com/ace-step/ACE-Step-1.5}},
 	year={2026},
 	note={GitHub repository}
