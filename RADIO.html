@@ -952,6 +952,7 @@
             <div class="tabs">
                 <div class="tab active" onclick="switchTab('api')">🔌 API Settings</div>
                 <div class="tab" onclick="switchTab('generation')">⚙️ Generation</div>
+                <div class="tab" onclick="switchTab('cover')">🎧 Cover</div>
                 <div class="tab" onclick="switchTab('lyrics')">📝 Lyrics</div>
                 <div class="tab" onclick="switchTab('history')">📜 History</div>
             </div>
@@ -1016,6 +1017,51 @@
                             <option value="mp3">MP3</option>
                             <option value="wav">WAV</option>
                             <option value="flac">FLAC</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="cover-tab">
+                <div class="config-grid">
+                    <div class="input-group">
+                        <label>Cover Mode</label>
+                        <select id="coverMode" onchange="onCoverModeChanged()">
+                            <option value="off">Off</option>
+                            <option value="covers-only">Covers Only</option>
+                            <option value="mixed">Sometimes Cover</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label>Cover Source (folder or file path)</label>
+                        <input type="text" id="coverSourceFolder" placeholder="H:/music/originals or H:/music/originals/song.mp3">
+                    </div>
+                    <div class="input-group">
+                        <label>Structure Adherence (0.0-1.0)</label>
+                        <input type="number" id="coverStrength" value="0.7" min="0" max="1" step="0.05">
+                    </div>
+                    <div class="input-group">
+                        <label>If Original Lyrics Missing</label>
+                        <select id="coverLyricsFallback">
+                            <option value="generate">Auto-generate lyrics</option>
+                            <option value="instrumental">Use Instrumental</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label>Mixed Cover Chance Min (%)</label>
+                        <input type="number" id="coverMixMinChance" value="20" min="0" max="100" step="1">
+                    </div>
+                    <div class="input-group">
+                        <label>Mixed Cover Chance Max (%)</label>
+                        <input type="number" id="coverMixMaxChance" value="50" min="0" max="100" step="1">
+                    </div>
+                    <div class="input-group">
+                        <label>Cover Vocal Target</label>
+                        <select id="coverVocalTarget">
+                            <option value="auto">Auto (from analysis)</option>
+                            <option value="female">Female Lead</option>
+                            <option value="male">Male Lead</option>
+                            <option value="duet">Duet</option>
                         </select>
                     </div>
                 </div>
@@ -1231,13 +1277,45 @@
             toggleRadioMode();
         });
 
+        function getDisplayStationName(baseName) {
+            return baseName;
+        }
+
+        function getDisplayCustomMixName() {
+            return 'Custom Mix';
+        }
+
+        function onCoverModeChanged() {
+            const mixed = isMixedCoverMode();
+            const only = isCoverOnlyMode();
+            const minNode = document.getElementById('coverMixMinChance');
+            const maxNode = document.getElementById('coverMixMaxChance');
+            if (minNode) minNode.disabled = !mixed;
+            if (maxNode) maxNode.disabled = !mixed;
+
+            renderStations();
+
+            if (currentStation) {
+                document.getElementById('trackTitle').textContent = getDisplayStationName(currentStation.name);
+            } else if (selectedGenres.size > 0) {
+                document.getElementById('trackTitle').textContent = getDisplayCustomMixName();
+            }
+
+            songQueue = songQueue.map(song => ({
+                ...song,
+                station: currentStation ? getDisplayStationName(currentStation.name) : getDisplayCustomMixName(),
+                generationMode: only ? 'cover' : (mixed ? (song.generationMode || 'mixed') : 'normal')
+            }));
+            renderQueue();
+        }
+
         function renderStations() {
             const grid = document.getElementById('stationGrid');
             grid.innerHTML = stations.map(s => `
                 <div class="station-card" data-station="${s.id}" onclick="selectStation('${s.id}')" style="--station-color: ${s.color}">
                     <div class="station-freq">${(88 + Math.random() * 20).toFixed(1)} FM</div>
                     <div class="station-icon">${s.icon}</div>
-                    <div class="station-name">${s.name}</div>
+                    <div class="station-name">${getDisplayStationName(s.name)}</div>
                     <div class="station-desc">${s.desc}</div>
                 </div>
             `).join('');
@@ -1262,7 +1340,7 @@
             
             currentStation = stations.find(s => s.id === stationId);
             
-            document.getElementById('trackTitle').textContent = currentStation.name;
+            document.getElementById('trackTitle').textContent = getDisplayStationName(currentStation.name);
             document.getElementById('trackMeta').textContent = currentStation.desc;
             document.getElementById('currentGenreTags').innerHTML = 
                 currentStation.genres.map(g => `<span class="genre-tag">${genres.find(x => x.id === g)?.name || g}</span>`).join('');
@@ -1293,7 +1371,7 @@
             }
             
             if (selectedGenres.size > 0) {
-                document.getElementById('trackTitle').textContent = 'Custom Mix';
+                document.getElementById('trackTitle').textContent = getDisplayCustomMixName();
                 document.getElementById('trackMeta').textContent = `${selectedGenres.size} genres selected`;
                 document.getElementById('currentGenreTags').innerHTML = 
                     Array.from(selectedGenres).map(g => `<span class="genre-tag">${genres.find(x => x.id === g)?.name}</span>`).join('');
@@ -1379,7 +1457,10 @@
                 genre: genre,
                 theme: theme,
                 status: 'pending',
-                station: currentStation?.name || 'Custom Mix'
+                station: currentStation ? getDisplayStationName(currentStation.name) : getDisplayCustomMixName(),
+                stationMood: currentStation?.mood || `${genre.name} style`,
+                stationId: currentStation?.id || null,
+                generationMode: isCoverOnlyMode() ? 'cover' : (isMixedCoverMode() ? 'mixed' : 'normal')
             };
             
             songQueue.push(song);
@@ -1398,23 +1479,82 @@
             renderQueue();
             
             try {
-                // Step 1: Generate lyrics
-                console.log(`Generating lyrics for: ${song.theme}`);
-                const lyrics = await generateLyrics(song.theme, song.genre);
-                if (!lyrics) throw new Error('Lyrics generation failed');
-                
+                let lyrics = null;
+                song.isCover = shouldGenerateCoverForSong();
+                if (song.isCover) {
+                    try {
+                        song.coverSourcePath = await pickRandomCoverSourceAudio();
+                        const info = await fetchAudioInfo(song.coverSourcePath);
+                        const fromFileName = song.coverSourcePath.split(/[\\/]/).pop()?.replace(/\.mp3$/i, '') || song.theme;
+                        song.originalTitle = info?.title?.trim() || fromFileName;
+                        song.originalArtist = info?.artist?.trim() || 'Unknown Artist';
+
+                        try {
+                            song.analysis = await analyzeCoverSource(song.coverSourcePath, song);
+                        } catch (e) {
+                            console.warn('Cover analysis failed, continuing without analysis metas:', e);
+                            song.analysis = null;
+                        }
+
+                        if (info?.lyrics && info.lyrics.trim()) {
+                            lyrics = buildCoverMetadata(song, info.lyrics);
+                            song.lyricsSource = info?.lyrics_source || 'unknown';
+                        }
+                    } catch (coverErr) {
+                        if (isMixedCoverMode()) {
+                            console.warn('Mixed cover selection failed, falling back to normal generation:', coverErr);
+                            song.isCover = false;
+                            song.coverSourcePath = null;
+                            song.analysis = null;
+                        } else {
+                            throw coverErr;
+                        }
+                    }
+                }
+
+                // Step 1: Generate lyrics only if cover extraction did not provide them
+                if (!lyrics) {
+                    if (song.isCover) {
+                        if (getCoverLyricsFallbackMode() === 'instrumental') {
+                            lyrics = buildCoverMetadata(song, 'Instrumental');
+                            song.lyricsSource = 'instrumental';
+                        } else {
+                            const fallbackTheme = buildCoverStyleCaption(song, '');
+                            const generated = await generateLyrics(fallbackTheme, song.genre);
+                            if (!generated) throw new Error('Lyrics generation failed');
+                            lyrics = buildCoverMetadata(song, generated.lyrics || 'Instrumental');
+                            song.lyricsSource = 'generated';
+                        }
+                    } else {
+                        console.log(`Generating lyrics for: ${song.theme}`);
+                        lyrics = await generateLyrics(song.theme, song.genre);
+                        if (!lyrics) throw new Error('Lyrics generation failed');
+                        song.lyricsSource = 'generated';
+                    }
+                }
+
+                if (song.isCover && song.analysis) {
+                    lyrics.caption = buildCoverStyleCaption(song, lyrics?.lyrics || '');
+                    if (song.analysis.bpm) lyrics.bpm = song.analysis.bpm;
+                    if (song.analysis.keyscale) lyrics.key = song.analysis.keyscale;
+                    if (song.analysis.timesignature) lyrics.timesignature = song.analysis.timesignature;
+                }
                 // Step 2: Generate music (only after lyrics succeed)
                 console.log(`Generating music for: ${song.theme}`);
-                const music = await generateMusic(lyrics, song.genre);
+                const music = await generateMusic(lyrics, song.genre, song.isCover ? (song.coverSourcePath || null) : null);
                 if (!music) throw new Error('Music generation failed');
                 
                 // Success - mark as ready
                 song.status = 'ready';
                 song.url = music.url;
                 song.metadata = music.metadata;
+                song.coverStrengthUsed = music.coverStrength;
                 song.lyrics = lyrics;
-
-                song.title = lyrics.title || song.theme;
+                if (song.isCover) {
+                    song.title = `${song.originalTitle || song.theme} Cover by ACE-Radio`;
+                } else {
+                    song.title = lyrics.title || song.theme;
+                }
                 
                 console.log(`Completed: ${song.theme}`);
                 
@@ -1587,28 +1727,448 @@
                 })
             });
 
-            if (!response.ok) throw new Error('LM Studio error');
+            if (!response.ok) {
+                const errBody = await response.text();
+                throw new Error(`LM Studio error ${response.status}: ${errBody.slice(0, 300)}`);
+            }
             
             const data = await response.json();
-            let content = data.choices[0].message.content;
-            
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (jsonMatch) content = jsonMatch[0];
-            
-            return JSON.parse(content);
+            const content = data?.choices?.[0]?.message?.content || '';
+            const parsed = parseLyricsPayload(content, theme, genre.name, includeVocals);
+            return parsed;
         }
 
-        async function generateMusic(lyrics, genre) {
+        function getCoverMode() {
+            const mode = document.getElementById('coverMode')?.value || 'off';
+            if (mode === 'true') return 'covers-only';
+            if (mode === 'false') return 'off';
+            return mode;
+        }
+
+        function isCoverModeEnabled() {
+            const mode = getCoverMode();
+            return mode === 'covers-only' || mode === 'mixed';
+        }
+
+        function isCoverOnlyMode() {
+            return getCoverMode() === 'covers-only';
+        }
+
+        function isMixedCoverMode() {
+            return getCoverMode() === 'mixed';
+        }
+
+        function getMixedCoverChanceRange() {
+            const minNode = document.getElementById('coverMixMinChance');
+            const maxNode = document.getElementById('coverMixMaxChance');
+            let minVal = Number(minNode?.value ?? 20);
+            let maxVal = Number(maxNode?.value ?? 50);
+            if (!Number.isFinite(minVal)) minVal = 20;
+            if (!Number.isFinite(maxVal)) maxVal = 50;
+            minVal = Math.max(0, Math.min(100, minVal));
+            maxVal = Math.max(0, Math.min(100, maxVal));
+            if (minVal > maxVal) {
+                const tmp = minVal;
+                minVal = maxVal;
+                maxVal = tmp;
+            }
+            return { min: minVal, max: maxVal };
+        }
+
+        function shouldGenerateCoverForSong() {
+            if (isCoverOnlyMode()) return true;
+            if (!isMixedCoverMode()) return false;
+            const range = getMixedCoverChanceRange();
+            const chancePercent = range.min + (Math.random() * (range.max - range.min));
+            return Math.random() < (chancePercent / 100);
+        }
+
+        function getCoverLyricsFallbackMode() {
+            const node = document.getElementById('coverLyricsFallback');
+            return node ? node.value : 'generate';
+        }
+
+        function getAceAuthHeaders(includeContentType = false) {
+            const apiKey = document.getElementById('aceApiKey').value;
+            const headers = {};
+            if (includeContentType) {
+                headers['Content-Type'] = 'application/json';
+            }
+            if (apiKey && apiKey.trim() !== '') {
+                headers['Authorization'] = `Bearer ${apiKey}`;
+            }
+            return headers;
+        }
+
+        async function pickRandomCoverSourceAudio() {
+            const sourceInput = document.getElementById('coverSourceFolder').value.trim();
+            if (!sourceInput) {
+                throw new Error('Cover mode is enabled but Cover Source Folder is empty');
+            }
+
+            const normalized = sourceInput.replace(/^["']|["']$/g, '').trim();
+
+            // Test mode: treat as direct file if it looks like one.
+            if (/\.(mp3|wav|flac|ogg|m4a|aac)$/i.test(normalized)) {
+                return normalized;
+            }
+
+            // Fallback detection: try as direct file path via audio-info endpoint first.
+            // If valid, reuse this file for every cover generation.
+            const infoUrl = document.getElementById('aceStepUrl').value
+                + '/v1/audio-info?audio_path='
+                + encodeURIComponent(normalized);
+            try {
+                const infoRes = await fetch(infoUrl, {
+                    method: 'GET',
+                    headers: getAceAuthHeaders(false)
+                });
+                if (infoRes.ok) {
+                    return normalized;
+                }
+            } catch {
+                // ignore and fallback to folder mode
+            }
+
+            const url = document.getElementById('aceStepUrl').value
+                + '/v1/audio-files?recursive=true&limit=5000&extensions=mp3&folder='
+                + encodeURIComponent(normalized);
+
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: getAceAuthHeaders(false)
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to list cover source audio files');
+            }
+
+            const data = await response.json();
+            const files = data?.data?.files || [];
+            if (!files.length) {
+                throw new Error(`No audio files found in folder: ${normalized}`);
+            }
+
+            const index = Math.floor(Math.random() * files.length);
+            return files[index];
+        }
+
+        async function fetchAudioInfo(audioPath) {
+            if (!audioPath) return null;
+
+            const url = document.getElementById('aceStepUrl').value
+                + '/v1/audio-info?debug_tags=true&audio_path='
+                + encodeURIComponent(audioPath);
+
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: getAceAuthHeaders(false)
+            });
+
+            if (!response.ok) return null;
+
+            const data = await response.json();
+            return data?.data || null;
+        }
+
+        function buildCoverMetadata(song, lyricsText) {
+            const originalTitle = song.originalTitle || song.theme || 'Unknown Title';
+            const originalArtist = song.originalArtist || 'Unknown Artist';
+            const styleName = song.genre?.name || 'Music';
+            const styleCaption = buildCoverStyleCaption(song, lyricsText);
+            return {
+                title: originalTitle,
+                caption: styleCaption || `${styleName}, ${song.stationMood || 'modern production style'}`,
+                lyrics: lyricsText,
+                bpm: undefined,
+                key: undefined,
+                timesignature: undefined
+            };
+        }
+
+        function getCoverVocalTarget() {
+            const raw = document.getElementById('coverVocalTarget')?.value || 'auto';
+            return raw.toString().trim().toLowerCase();
+        }
+
+        function inferCoverVocalTarget(song) {
+            const text = `${song?.analysis?.prompt || ''} ${song?.analysis?.lyrics || ''}`.toLowerCase();
+            if (!text) return null;
+            if (text.includes('duet') || text.includes('two vocal')) return 'duet';
+            if (text.includes('female vocal') || text.includes('female voice') || text.includes('woman vocal') || text.includes('female lead')) return 'female';
+            if (text.includes('male vocal') || text.includes('male voice') || text.includes('man vocal') || text.includes('male lead')) return 'male';
+            return null;
+        }
+
+        function getCoverVocalCaptionHint(song, lyricsText = '') {
+            const rawLyrics = (lyricsText || '').toString().trim().toLowerCase();
+            if (!rawLyrics || rawLyrics === 'instrumental') {
+                return 'instrumental arrangement, no lead vocals';
+            }
+
+            const configured = getCoverVocalTarget();
+            const target = configured === 'auto' ? (inferCoverVocalTarget(song) || 'auto') : configured;
+            if (target === 'female') return 'female lead vocals, expressive phrasing';
+            if (target === 'male') return 'male lead vocals, expressive phrasing';
+            if (target === 'duet') return 'duet vocals with distinct male/female contrast';
+            return 'lead vocals with expressive phrasing';
+        }
+
+        function buildCoverStyleCaption(song, lyricsText = '') {
+            const styleName = song?.genre?.name || 'Music';
+            const mood = song?.stationMood || `${styleName} style`;
+            const vocalHint = getCoverVocalCaptionHint(song, lyricsText);
+            return `${styleName}, ${mood}, ${vocalHint}, modern arrangement, polished production, expressive dynamics`;
+        }
+
+        function getTaskInstruction(isCover) {
+            if (isCover) {
+                return 'Create a cover from source audio: preserve core musical structure and lyrical phrasing while reimagining instrumentation, timbre, arrangement, and production according to the caption style.';
+            }
+            return 'Create a high-quality original track according to caption, lyrics, and metadata.';
+        }
+
+        function parseAnalysisResult(result) {
+            if (!result) return null;
+            const metas = result.metas || {};
+            const bpm = Number(result.bpm ?? metas.bpm);
+            const keyscale = (result.keyscale ?? metas.keyscale ?? '').toString().trim();
+            const timesignature = (result.timesignature ?? metas.timesignature ?? '').toString().trim();
+            const prompt = (result.prompt ?? metas.caption ?? '').toString().trim();
+            const analyzedLyrics = (result.lyrics ?? metas.lyrics ?? '').toString().trim();
+            return {
+                bpm: Number.isFinite(bpm) ? bpm : undefined,
+                keyscale: keyscale || undefined,
+                timesignature: timesignature || undefined,
+                prompt: prompt || undefined,
+                lyrics: analyzedLyrics || undefined
+            };
+        }
+
+        async function analyzeCoverSource(coverSourcePath, song) {
+            const payload = {
+                task_type: 'cover',
+                src_audio_path: coverSourcePath,
+                full_analysis_only: true,
+                instruction: getTaskInstruction(true),
+                prompt: buildCoverStyleCaption(song, ''),
+                audio_duration: parseInt(document.getElementById('defaultDuration').value)
+            };
+
+            const response = await fetch(document.getElementById('aceStepUrl').value + '/release_task', {
+                method: 'POST',
+                headers: getAceAuthHeaders(true),
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errBody = await response.text();
+                throw new Error(`Analysis error ${response.status}: ${errBody.slice(0, 300)}`);
+            }
+
+            const data = await response.json();
+            if (data.code !== 200 || !data.data?.task_id) {
+                throw new Error(`Analysis request rejected: ${data.error || 'unknown error'}`);
+            }
+
+            return await pollAnalysisResult(data.data.task_id);
+        }
+
+        function pollAnalysisResult(taskId) {
+            return new Promise((resolve, reject) => {
+                const check = async () => {
+                    try {
+                        const response = await fetch(document.getElementById('aceStepUrl').value + '/query_result', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ task_id_list: [taskId] })
+                        });
+
+                        const data = await response.json();
+                        if (data.code !== 200 || !data.data?.length) {
+                            setTimeout(check, 1500);
+                            return;
+                        }
+
+                        const task = data.data[0];
+                        if (task.status === 1) {
+                            const result = JSON.parse(task.result);
+                            if (result?.length > 0) {
+                                resolve(parseAnalysisResult(result[0]));
+                            } else {
+                                resolve(null);
+                            }
+                        } else if (task.status === 2) {
+                            reject(new Error('Analysis failed'));
+                        } else {
+                            setTimeout(check, 1500);
+                        }
+                    } catch {
+                        setTimeout(check, 1500);
+                    }
+                };
+                check();
+            });
+        }
+
+        function getLyricsSourceLabel(song) {
+            const raw = (song?.lyricsSource || '').toString().trim();
+            if (!raw) return 'Lyrics: unknown';
+            const lower = raw.toLowerCase();
+            if (lower === 'generated') return 'Lyrics: generated';
+            if (lower === 'instrumental') return 'Lyrics: instrumental';
+            if (lower.endsWith('.lrc')) return 'Lyrics: .lrc';
+            if (lower.endsWith('.txt')) return 'Lyrics: .txt';
+            if (lower.includes('uslt')) return 'Lyrics: USLT tag';
+            if (lower.includes('ulst')) return 'Lyrics: ULST tag';
+            if (lower.startsWith('embedded:')) return 'Lyrics: embedded tag';
+            return `Lyrics: ${raw}`;
+        }
+
+        function getCoverStrengthLabel(song) {
+            if (!song?.isCover) return '';
+            const val = Number(song?.coverStrengthUsed);
+            if (Number.isFinite(val)) return `Cover strength: ${val.toFixed(2)}`;
+            return 'Cover';
+        }
+
+        function getSongMetaParts(song) {
+            const parts = [
+                song?.genre?.name || 'Unknown',
+                song?.station || 'Radio',
+                getLyricsSourceLabel(song)
+            ];
+            const strength = getCoverStrengthLabel(song);
+            if (strength) parts.push(strength);
+            return parts;
+        }
+
+        function extractBalancedJsonObject(text) {
+            if (!text) return null;
+            let start = -1;
+            let depth = 0;
+            let inString = false;
+            let escaped = false;
+
+            for (let i = 0; i < text.length; i++) {
+                const ch = text[i];
+                if (start === -1) {
+                    if (ch === '{') {
+                        start = i;
+                        depth = 1;
+                    }
+                    continue;
+                }
+
+                if (inString) {
+                    if (escaped) {
+                        escaped = false;
+                    } else if (ch === '\\') {
+                        escaped = true;
+                    } else if (ch === '"') {
+                        inString = false;
+                    }
+                    continue;
+                }
+
+                if (ch === '"') {
+                    inString = true;
+                    continue;
+                }
+                if (ch === '{') depth++;
+                if (ch === '}') {
+                    depth--;
+                    if (depth === 0) {
+                        return text.slice(start, i + 1);
+                    }
+                }
+            }
+            return null;
+        }
+
+        function sanitizeJsonControlChars(text) {
+            if (!text) return text;
+            let out = '';
+            let inString = false;
+            let escaped = false;
+
+            for (let i = 0; i < text.length; i++) {
+                const ch = text[i];
+                if (inString) {
+                    if (escaped) {
+                        out += ch;
+                        escaped = false;
+                        continue;
+                    }
+                    if (ch === '\\') {
+                        out += ch;
+                        escaped = true;
+                        continue;
+                    }
+                    if (ch === '"') {
+                        out += ch;
+                        inString = false;
+                        continue;
+                    }
+                    if (ch === '\n') { out += '\\n'; continue; }
+                    if (ch === '\r') { out += '\\r'; continue; }
+                    if (ch === '\t') { out += '\\t'; continue; }
+                    out += ch;
+                    continue;
+                }
+
+                if (ch === '"') inString = true;
+                out += ch;
+            }
+            return out;
+        }
+
+        function normalizeLyricsResult(obj, fallbackTheme, fallbackGenreName, includeVocals) {
+            const safeTheme = fallbackTheme || 'Untitled';
+            const safeGenre = fallbackGenreName || 'Music';
+            const title = (obj?.title || '').toString().trim() || safeTheme;
+            const caption = (obj?.caption || '').toString().trim() || `${safeGenre} track inspired by ${safeTheme}`;
+            const lyrics = (obj?.lyrics || '').toString().trim() || (includeVocals ? `[Verse]\n${safeTheme}` : 'Instrumental');
+            const bpmVal = Number(obj?.bpm);
+            const bpm = Number.isFinite(bpmVal) ? bpmVal : undefined;
+            const key = obj?.key ? String(obj.key).trim() : undefined;
+            return { title, caption, lyrics, bpm, key };
+        }
+
+        function parseLyricsPayload(content, fallbackTheme, fallbackGenreName, includeVocals) {
+            if (!content) {
+                return normalizeLyricsResult({}, fallbackTheme, fallbackGenreName, includeVocals);
+            }
+
+            const stripped = content.replace(/```json|```/gi, '').trim();
+            const candidates = [stripped];
+            const balanced = extractBalancedJsonObject(stripped);
+            if (balanced) candidates.push(balanced);
+
+            for (const c of candidates) {
+                try {
+                    return normalizeLyricsResult(JSON.parse(c), fallbackTheme, fallbackGenreName, includeVocals);
+                } catch {}
+                try {
+                    const repaired = sanitizeJsonControlChars(c);
+                    return normalizeLyricsResult(JSON.parse(repaired), fallbackTheme, fallbackGenreName, includeVocals);
+                } catch {}
+            }
+
+            return normalizeLyricsResult({ lyrics: stripped }, fallbackTheme, fallbackGenreName, includeVocals);
+        }
+
+        async function generateMusic(lyrics, genre, coverSourcePath = null) {
             if (!genre || !genre.name) {
                 genre = genres[0];
             }
             
             const duration = parseInt(document.getElementById('defaultDuration').value);
-            const apiKey = document.getElementById('aceApiKey').value;
             
             const payload = {
-                prompt: lyrics.caption,
+                prompt: (lyrics.caption || `${genre.name} track`).toString(),
                 lyrics: lyrics.lyrics || '',
+                instruction: getTaskInstruction(Boolean(coverSourcePath)),
                 thinking: false,
                 vocal_language: document.getElementById('language').value,
                 audio_duration: duration,
@@ -1617,25 +2177,45 @@
                 use_random_seed: true,
                 audio_format: document.getElementById('audioFormat').value
             };
+            let appliedCoverStrength = null;
             
             if (lyrics.bpm) payload.bpm = lyrics.bpm;
             if (lyrics.key) payload.key_scale = lyrics.key;
-            
+            if (lyrics.timesignature) payload.time_signature = lyrics.timesignature;
+            if (coverSourcePath) {
+                payload.task_type = 'cover';
+                payload.src_audio_path = coverSourcePath;
+                const baseStrength = parseFloat(document.getElementById('coverStrength').value);
+                const lyricsText = (lyrics?.lyrics || '').toString().trim().toLowerCase();
+                const isInstrumental = !lyricsText || lyricsText === 'instrumental';
+                if (isInstrumental) {
+                    const minStrength = Math.min(0.7, baseStrength + 0.10);
+                    const maxStrength = Math.min(0.7, baseStrength + 0.20);
+                    const boosted = minStrength + (Math.random() * (maxStrength - minStrength));
+                    payload.audio_cover_strength = Number(boosted.toFixed(2));
+                } else {
+                    payload.audio_cover_strength = baseStrength;
+                }
+                appliedCoverStrength = payload.audio_cover_strength;
+            }
+
             const response = await fetch(document.getElementById('aceStepUrl').value + '/release_task', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': apiKey ? `Bearer ${apiKey}` : ''
-                },
+                headers: getAceAuthHeaders(true),
                 body: JSON.stringify(payload)
             });
             
-            if (!response.ok) throw new Error('ACE-Step error');
+            if (!response.ok) {
+                const errBody = await response.text();
+                throw new Error(`ACE-Step error ${response.status}: ${errBody.slice(0, 400)}`);
+            }
             
             const data = await response.json();
             if (data.code !== 200) throw new Error(data.error);
             
-            return await pollResult(data.data.task_id);
+            const result = await pollResult(data.data.task_id);
+            result.coverStrength = appliedCoverStrength;
+            return result;
         }
 
         function pollResult(taskId) {
@@ -1700,7 +2280,10 @@
             player.src = ready.url;
             
             document.getElementById('trackTitle').textContent = ready.title || ready.theme; 
-            document.getElementById('trackMeta').textContent = `${ready.genre?.name || 'Unknown'} • ${ready.station || 'Radio'}`;
+            document.getElementById('trackMeta').textContent = getSongMetaParts(ready).join(' • ');
+            document.getElementById('currentGenreTags').innerHTML = getSongMetaParts(ready)
+                .map(tag => `<span class="genre-tag">${tag}</span>`)
+                .join('');
             document.getElementById('albumArt').classList.add('playing');
             document.getElementById('playBtn').innerHTML = '⏸';
             
@@ -1786,7 +2369,7 @@
                     <div class="queue-number">#${playHistory.length - index}</div>
                     <div class="queue-info">
                         <div class="queue-title">${song.title}</div>
-                        <div class="queue-meta">${song.genre?.name} • ${song.station}</div>
+                        <div class="queue-meta">${getSongMetaParts(song).join(' • ')}</div>
                     </div>
                     <div class="queue-status">
                         <a href="${song.url}" download="${song.title}.wav" class="btn btn-secondary" style="padding: 5px 15px; font-size: 0.8rem;">
@@ -1852,6 +2435,7 @@
                     <div class="queue-number">${index + 1}</div>
                     <div class="queue-info">
                     <div class="queue-title">${isFailed ? '⚠️ ' : ''}${song.title || song.theme || 'Untitled'}</div> 
+                    <div class="queue-meta">${getSongMetaParts(song).join(' • ')}</div>
                     </div>
                     <div class="queue-status">
                         <div class="status-dot ${song.status}"></div>
@@ -1914,7 +2498,14 @@
                 language: document.getElementById('language').value,
                 defaultDuration: document.getElementById('defaultDuration').value,
                 inferenceSteps: document.getElementById('inferenceSteps').value,
-                queueBuffer: document.getElementById('queueBuffer').value
+                queueBuffer: document.getElementById('queueBuffer').value,
+                coverMode: document.getElementById('coverMode').value,
+                coverSourceFolder: document.getElementById('coverSourceFolder').value,
+                coverStrength: document.getElementById('coverStrength').value,
+                coverLyricsFallback: document.getElementById('coverLyricsFallback').value,
+                coverMixMinChance: document.getElementById('coverMixMinChance').value,
+                coverMixMaxChance: document.getElementById('coverMixMaxChance').value,
+                coverVocalTarget: document.getElementById('coverVocalTarget').value
             };
             localStorage.setItem('aceStepRadioSettings', JSON.stringify(settings));
             alert('Settings saved!');
@@ -1930,7 +2521,18 @@
                 if (s.defaultDuration) document.getElementById('defaultDuration').value = s.defaultDuration;
                 if (s.inferenceSteps) document.getElementById('inferenceSteps').value = s.inferenceSteps;
                 if (s.queueBuffer) document.getElementById('queueBuffer').value = s.queueBuffer;
+                if (s.coverMode) {
+                    const normalizedMode = s.coverMode === 'true' ? 'covers-only' : (s.coverMode === 'false' ? 'off' : s.coverMode);
+                    document.getElementById('coverMode').value = normalizedMode;
+                }
+                if (s.coverSourceFolder) document.getElementById('coverSourceFolder').value = s.coverSourceFolder;
+                if (s.coverStrength) document.getElementById('coverStrength').value = s.coverStrength;
+                if (s.coverLyricsFallback) document.getElementById('coverLyricsFallback').value = s.coverLyricsFallback;
+                if (s.coverMixMinChance) document.getElementById('coverMixMinChance').value = s.coverMixMinChance;
+                if (s.coverMixMaxChance) document.getElementById('coverMixMaxChance').value = s.coverMixMaxChance;
+                if (s.coverVocalTarget) document.getElementById('coverVocalTarget').value = s.coverVocalTarget;
             }
+            onCoverModeChanged();
         }
 
         function createCustomStation() {

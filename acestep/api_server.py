@@ -91,6 +91,7 @@ MODEL_REPO_MAPPING = {
 }
 
 DEFAULT_REPO_ID = "ACE-Step/Ace-Step1.5"
+SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"}
 
 
 def _can_access_google(timeout: float = 3.0) -> bool:
@@ -898,9 +899,18 @@ def _validate_audio_path(path: Optional[str]) -> Optional[str]:
     """
     if not path:
         return None
-    # Reject absolute paths (Unix and Windows)
+    # Optional override for local deployments where users intentionally provide
+    # server-side absolute paths for cover/reference audio.
+    allow_abs = str(os.getenv("ACESTEP_ALLOW_ABSOLUTE_AUDIO_PATHS", "true")).strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     if os.path.isabs(path):
-        raise HTTPException(status_code=400, detail="absolute audio file paths are not allowed")
+        if allow_abs:
+            return os.path.normpath(path)
+        raise HTTPException(
+            status_code=400,
+            detail="absolute audio file paths are not allowed (set ACESTEP_ALLOW_ABSOLUTE_AUDIO_PATHS=true to enable)",
+        )
     # Reject path traversal via '..' components
     normalized = os.path.normpath(path)
     if ".." in normalized.split(os.sep):
@@ -2471,6 +2481,231 @@ def create_app() -> FastAPI:
             "service": "ACE-Step API",
             "version": "1.0",
         })
+
+    def _collect_audio_files(folder: str, recursive: bool, limit: int, extensions: Optional[set[str]] = None) -> List[str]:
+        """Collect audio files from a server-side folder."""
+        if not folder:
+            raise HTTPException(status_code=400, detail="Missing folder parameter")
+
+        resolved = os.path.realpath(folder)
+        allowed_exts = extensions or SUPPORTED_AUDIO_EXTENSIONS
+        # Be permissive: allow passing a single audio file path.
+        if os.path.isfile(resolved):
+            ext = os.path.splitext(resolved)[1].lower()
+            if ext in allowed_exts:
+                return [resolved.replace("\\", "/")]
+            return []
+
+        if not os.path.isdir(resolved):
+            raise HTTPException(status_code=400, detail=f"Folder not found: {folder}")
+
+        files: List[str] = []
+        if recursive:
+            for root, _, names in os.walk(resolved):
+                for name in names:
+                    ext = os.path.splitext(name)[1].lower()
+                    if ext in allowed_exts:
+                        files.append(os.path.join(root, name).replace("\\", "/"))
+                        if len(files) >= limit:
+                            return files
+        else:
+            for name in os.listdir(resolved):
+                path = os.path.join(resolved, name)
+                if not os.path.isfile(path):
+                    continue
+                ext = os.path.splitext(name)[1].lower()
+                if ext in allowed_exts:
+                    files.append(path.replace("\\", "/"))
+                    if len(files) >= limit:
+                        return files
+
+        return files
+
+    def _cleanup_lyrics_text(text: Optional[str]) -> Optional[str]:
+        """Normalize lyrics text and strip common LRC timestamps."""
+        if not text:
+            return None
+        cleaned_lines: List[str] = []
+        for raw in str(text).splitlines():
+            line = raw.strip()
+            # Remove one or more leading LRC timestamps like [01:23.45]
+            while line.startswith("[") and "]" in line:
+                head = line[1:line.index("]")]
+                if ":" not in head:
+                    break
+                line = line[line.index("]") + 1:].lstrip()
+            if line:
+                cleaned_lines.append(line)
+        cleaned = "\n".join(cleaned_lines).strip()
+        return cleaned or None
+
+    def _tag_value_to_text(value: Any) -> Optional[str]:
+        """Convert mutagen tag value/frame into plain text."""
+        if value is None:
+            return None
+        # ID3 frame style: frame.text may be list[str]
+        if hasattr(value, "text"):
+            frame_text = getattr(value, "text")
+            if isinstance(frame_text, list):
+                return " ".join(str(x) for x in frame_text if str(x).strip()).strip() or None
+            return str(frame_text).strip() or None
+        if isinstance(value, list):
+            return " ".join(str(x) for x in value if str(x).strip()).strip() or None
+        # MP4 tags can be bytes/list[bytes]
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="ignore").strip() or None
+        return str(value).strip() or None
+
+    def _extract_audio_info(audio_path: str, debug_tags: bool = False) -> Dict[str, Any]:
+        """Extract title/artist/lyrics from sidecar files and embedded tags."""
+        if not audio_path:
+            raise HTTPException(status_code=400, detail="Missing audio_path parameter")
+
+        resolved = os.path.realpath(audio_path)
+        if not os.path.isfile(resolved):
+            raise HTTPException(status_code=400, detail=f"Audio file not found: {audio_path}")
+
+        file_stem = os.path.splitext(os.path.basename(resolved))[0]
+        title: Optional[str] = None
+        artist: Optional[str] = None
+        lyrics: Optional[str] = None
+        lyrics_source: Optional[str] = None
+        debug: Dict[str, Any] = {"library": "mutagen", "tag_items": []} if debug_tags else {}
+
+        base, _ = os.path.splitext(resolved)
+        sidecars = [f"{base}.lrc", f"{base}.txt"]
+        for sidecar in sidecars:
+            if os.path.isfile(sidecar):
+                try:
+                    with open(sidecar, "r", encoding="utf-8") as f:
+                        text = _cleanup_lyrics_text(f.read())
+                    if text:
+                        lyrics = text
+                        lyrics_source = os.path.basename(sidecar)
+                        break
+                except Exception:
+                    pass
+
+        # Embedded tags (best-effort, optional dependency)
+        try:
+            from mutagen import File as MutagenFile  # type: ignore
+
+            m = MutagenFile(resolved)
+            if m and getattr(m, "tags", None):
+                tags = m.tags
+                if debug_tags:
+                    for key, value in tags.items():
+                        key_str = str(key)
+                        desc = str(getattr(value, "desc", ""))
+                        val_text = _tag_value_to_text(value) or ""
+                        preview = val_text[:300] + ("..." if len(val_text) > 300 else "")
+                        debug["tag_items"].append({
+                            "key": key_str,
+                            "desc": desc,
+                            "value_preview": preview,
+                        })
+                for key in ("TIT2", "\u00a9nam", "TITLE", "title"):
+                    val = _tag_value_to_text(tags.get(key))
+                    if val:
+                        title = val
+                        break
+
+                for key in ("TPE1", "\u00a9ART", "ARTIST", "artist", "ALBUMARTIST", "albumartist"):
+                    val = _tag_value_to_text(tags.get(key))
+                    if val:
+                        artist = val
+                        break
+
+                if not lyrics:
+                    for key in (
+                        "USLT::eng", "USLT::XXX", "USLT",
+                        "ULST::eng", "ULST::XXX", "ULST",
+                        "LYRICS", "lyrics", "\u00a9lyr",
+                    ):
+                        val = _cleanup_lyrics_text(_tag_value_to_text(tags.get(key)))
+                        if val:
+                            lyrics = val
+                            lyrics_source = f"embedded:{key}"
+                            break
+                if not lyrics:
+                    for key, value in tags.items():
+                        key_str = str(key)
+                        key_lower = key_str.lower()
+                        desc = str(getattr(value, "desc", "")).lower()
+                        if any(tok in key_lower for tok in ("lyr", "lyric", "uslt", "ulst", "sylt")) or any(
+                            tok in desc for tok in ("lyr", "lyric")
+                        ):
+                            val = _cleanup_lyrics_text(_tag_value_to_text(value))
+                            if val:
+                                lyrics = val
+                                lyrics_source = f"embedded:{key_str}"
+                                break
+        except Exception as e:
+            if debug_tags:
+                debug["error"] = f"mutagen parse failed: {type(e).__name__}: {e}"
+
+        if not title:
+            title = file_stem
+
+        out = {
+            "title": title,
+            "artist": artist,
+            "lyrics": lyrics,
+            "lyrics_source": lyrics_source,
+            "file_name": os.path.basename(resolved),
+        }
+        if debug_tags:
+            out["tag_debug"] = debug
+        return out
+
+    @app.get("/v1/audio-files")
+    async def list_audio_files(
+        folder: str,
+        recursive: bool = True,
+        limit: int = 1000,
+        extensions: str = "",
+        _: None = Depends(verify_api_key),
+    ):
+        """List audio files from a server-side folder."""
+        allowed_exts = SUPPORTED_AUDIO_EXTENSIONS
+        if extensions.strip():
+            allowed_exts = {
+                (ext.strip().lower() if ext.strip().startswith(".") else f".{ext.strip().lower()}")
+                for ext in extensions.split(",")
+                if ext.strip()
+            } or SUPPORTED_AUDIO_EXTENSIONS
+        safe_limit = max(1, min(limit, 5000))
+        files = _collect_audio_files(
+            folder=folder,
+            recursive=recursive,
+            limit=safe_limit,
+            extensions=allowed_exts,
+        )
+        return _wrap_response({
+            "folder": os.path.realpath(folder).replace("\\", "/"),
+            "count": len(files),
+            "files": files,
+        })
+
+    @app.get("/v1/audio-info")
+    async def get_audio_info(
+        audio_path: str,
+        debug_tags: bool = False,
+        _: None = Depends(verify_api_key),
+    ):
+        """Extract title/artist/lyrics from sidecar files and embedded tags."""
+        data = _extract_audio_info(audio_path, debug_tags=debug_tags)
+        resp = {
+            "audio_path": os.path.realpath(audio_path).replace("\\", "/"),
+            "title": data["title"],
+            "artist": data["artist"],
+            "lyrics": data["lyrics"],
+            "lyrics_source": data["lyrics_source"],
+            "file_name": data["file_name"],
+        }
+        if debug_tags:
+            resp["tag_debug"] = data.get("tag_debug", {})
+        return _wrap_response(resp)
 
     @app.get("/v1/stats")
     async def get_stats(_: None = Depends(verify_api_key)):
