@@ -450,18 +450,19 @@ def send_audio_to_src_with_metadata(audio_file, lm_metadata):
     
     This function ONLY sets the src_audio field. All other metadata fields (caption, lyrics, etc.)
     are preserved by returning gr.skip() to avoid overwriting user's existing inputs.
+    Also opens the audio_uploads_accordion so the user can see the uploaded audio.
     
     Args:
         audio_file: Audio file path
         lm_metadata: Dictionary containing LM-generated metadata (unused, kept for API compatibility)
         
     Returns:
-        Tuple of (audio_file, bpm, caption, lyrics, duration, key_scale, language, time_signature, is_format_caption)
-        All values except audio_file are gr.skip() to preserve existing UI values
+        Tuple of (audio_file, bpm, caption, lyrics, duration, key_scale, language, time_signature, is_format_caption, audio_uploads_accordion)
+        All values except audio_file and audio_uploads_accordion are gr.skip() to preserve existing UI values
     """
     if audio_file is None:
         # Return all skip to not modify anything
-        return (gr.skip(),) * 9
+        return (gr.skip(),) * 10
     
     # Only set the audio file, skip all other fields to preserve existing values
     # This ensures user's caption, lyrics, bpm, etc. are NOT cleared
@@ -475,6 +476,7 @@ def send_audio_to_src_with_metadata(audio_file, lm_metadata):
         gr.skip(),       # language - preserve existing value
         gr.skip(),       # time_signature - preserve existing value
         gr.skip(),       # is_format_caption - preserve existing value
+        gr.Accordion(open=True),  # audio_uploads_accordion - expand to show uploaded audio
     )
 
 
@@ -531,14 +533,11 @@ def generate_with_progress(
         logger.info("[generate_with_progress] Skipping Phase 1 metas COT: sample is already formatted (is_format_caption=True)")
         gr.Info(t("messages.skipping_metas_cot"))
     
-    # Parse and validate custom timesteps
     parsed_timesteps, has_timesteps_warning, _ = parse_and_validate_timesteps(custom_timesteps, inference_steps)
-    
-    # Update inference_steps if custom timesteps provided (to match UI display)
-    actual_inference_steps = inference_steps
+    actual_inference_steps = int(inference_steps) if inference_steps is not None else 8
     if parsed_timesteps is not None:
         actual_inference_steps = len(parsed_timesteps) - 1
-    
+
     # step 1: prepare inputs
     # generate_music, GenerationParams, GenerationConfig
     gen_params = GenerationParams(
@@ -577,12 +576,19 @@ def generate_with_progress(
         use_cot_language=use_cot_language,
         use_constrained_decoding=True,
     )
-    # seed string to list
-    if isinstance(seed, str) and seed.strip():
+    if isinstance(seed, (int, float)):
+        seed_list = [int(seed)] if seed >= 0 else None
+    elif isinstance(seed, str) and seed.strip():
         if "," in seed:
-            seed_list = [int(s.strip()) for s in seed.split(",")]
+            try:
+                seed_list = [int(s.strip()) for s in seed.split(",")]
+            except (ValueError, TypeError):
+                seed_list = None
         else:
-            seed_list = [int(seed.strip())]
+            try:
+                seed_list = [int(seed.strip())]
+            except (ValueError, TypeError):
+                seed_list = None
     else:
         seed_list = None
     gen_config = GenerationConfig(

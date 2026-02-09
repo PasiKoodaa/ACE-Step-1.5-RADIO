@@ -99,6 +99,10 @@ class AceStepHandler:
         self._load_progress_estimates()
         self.last_init_params = None
         
+        # Quantization state - tracks if model is quantized (int8_weight_only, fp8_weight_only, or w8a8_dynamic)
+        # Populated during initialize_service, remains None if quantization is disabled
+        self.quantization = None
+        
         # LoRA state
         self.lora_loaded = False
         self.use_lora = False
@@ -167,6 +171,15 @@ class AceStepHandler:
         """
         if self.model is None:
             return "❌ Model not initialized. Please initialize service first."
+        
+        # Check if model is quantized - LoRA loading on quantized models is not supported
+        # due to incompatibility between PEFT and torchao (missing get_apply_tensor_subclass argument)
+        if self.quantization is not None:
+            return (
+                f"❌ LoRA loading is not supported on quantized models. "
+                f"Current quantization: {self.quantization}. "
+                "Please re-initialize the service with quantization disabled, then try loading the LoRA adapter again."
+            )
         
         if not lora_path or not lora_path.strip():
             return "❌ Please provide a LoRA path."
@@ -375,6 +388,11 @@ class AceStepHandler:
             (status_message, enable_generate_button)
         """
         try:
+            if config_path is None:
+                config_path = "acestep-v15-turbo"
+                logger.warning(
+                    "[initialize_service] config_path not set; defaulting to 'acestep-v15-turbo'."
+                )
             if device == "auto":
                 if torch.cuda.is_available():
                     device = "cuda"
@@ -455,6 +473,10 @@ class AceStepHandler:
                 logger.info(f"[initialize_service] {msg}")
 
             # Check and download the requested DiT model
+            if config_path == "":
+                logger.warning(
+                    "[initialize_service] Empty config_path; pass None to use the default model."
+                )
             if not check_model_exists(config_path, checkpoint_path):
                 logger.info(f"[initialize_service] DiT model '{config_path}' not found, starting auto-download...")
                 success, msg = ensure_dit_model(config_path, checkpoint_path, prefer_source=prefer_source)
@@ -533,6 +555,7 @@ class AceStepHandler:
                     
                     if self.quantization is not None:
                         from torchao.quantization import quantize_
+                        from torchao.quantization.quant_api import _is_linear
                         if self.quantization == "int8_weight_only":
                             from torchao.quantization import Int8WeightOnlyConfig
                             quant_config = Int8WeightOnlyConfig()
@@ -545,7 +568,22 @@ class AceStepHandler:
                         else:
                             raise ValueError(f"Unsupported quantization type: {self.quantization}")
                         
-                        quantize_(self.model, quant_config)
+                        # Only quantize DiT layers; exclude tokenizer and detokenizer submodules.
+                        # The tokenizer (ResidualFSQ) and detokenizer contain small Linear layers
+                        # that are used for audio code decoding. Quantizing them causes device
+                        # mismatch errors during CPU↔GPU offloading because some torchao versions
+                        # don't fully support .to(device) on AffineQuantizedTensor, and these
+                        # layers are too small to benefit from quantization anyway.
+                        def _dit_filter_fn(module, fqn):
+                            if not _is_linear(module, fqn):
+                                return False
+                            # Exclude tokenizer/detokenizer (including via _orig_mod prefix from torch.compile)
+                            for part in fqn.split("."):
+                                if part in ("tokenizer", "detokenizer"):
+                                    return False
+                            return True
+                        
+                        quantize_(self.model, quant_config, filter_fn=_dit_filter_fn)
                         logger.info(f"[initialize_service] DiT quantized with: {self.quantization}")
                     
                     
@@ -706,7 +744,45 @@ class AceStepHandler:
         except Exception:
             target_type = "cpu" if str(target_device) == "cpu" else "cuda"
         return tensor.device.type == target_type
-    
+
+    @staticmethod
+    def _get_affine_quantized_tensor_class():
+        """Return the AffineQuantizedTensor class from torchao, or None if unavailable.
+        
+        Supports both old (torchao.quantization.affine_quantized) and new
+        (torchao.dtypes.affine_quantized_tensor) import paths across torchao versions.
+        """
+        try:
+            from torchao.dtypes.affine_quantized_tensor import AffineQuantizedTensor
+            return AffineQuantizedTensor
+        except ImportError:
+            pass
+        try:
+            from torchao.quantization.affine_quantized import AffineQuantizedTensor
+            return AffineQuantizedTensor
+        except ImportError:
+            pass
+        return None
+
+    def _is_quantized_tensor(self, t):
+        """True if t is a torchao AffineQuantizedTensor (calling .to() on it can raise NotImplementedError)."""
+        if t is None:
+            return False
+        cls = self._get_affine_quantized_tensor_class()
+        if cls is None:
+            return False
+        return isinstance(t, cls)
+
+    def _has_quantized_params(self, module):
+        """True if module (or any submodule) has at least one AffineQuantizedTensor parameter."""
+        cls = self._get_affine_quantized_tensor_class()
+        if cls is None:
+            return False
+        for _, param in module.named_parameters():
+            if param is not None and isinstance(param, cls):
+                return True
+        return False
+
     def _ensure_silence_latent_on_device(self):
         """Ensure silence_latent is on the correct device (self.device)."""
         if hasattr(self, "silence_latent") and self.silence_latent is not None:
@@ -759,20 +835,74 @@ class AceStepHandler:
             except Exception:
                 pass
     
+    def _move_quantized_param(self, param, target_device):
+        """Move an AffineQuantizedTensor to target_device using _apply_fn_to_data.
+        
+        This is the safe fallback for older torch versions where model.to(device) raises
+        NotImplementedError on AffineQuantizedTensor (because aten._has_compatible_shallow_copy_type
+        is not implemented). _apply_fn_to_data recursively applies a function to all inner
+        tensors (int_data, scale, zero_point, etc.) without going through Module._apply.
+        """
+        if hasattr(param, '_apply_fn_to_data'):
+            return torch.nn.Parameter(
+                param._apply_fn_to_data(lambda x: x.to(target_device)),
+                requires_grad=param.requires_grad,
+            )
+        # Last resort: try direct .to() (may raise)
+        return param.to(target_device)
+
     def _recursive_to_device(self, model, device, dtype=None):
         """
         Recursively move all parameters and buffers of a model to the specified device.
         This is more thorough than model.to() for some custom HuggingFace models.
+        
+        Handles torchao AffineQuantizedTensor parameters that may raise NotImplementedError
+        on model.to(device) in older torch versions (where Module._apply calls
+        _has_compatible_shallow_copy_type, which is not implemented for AffineQuantizedTensor).
+        In that case, falls back to moving quantized parameters individually via _apply_fn_to_data.
         """
         target_device = torch.device(device) if isinstance(device, str) else device
         
-        # Method 1: Standard .to() call
-        model.to(target_device)
-        if dtype is not None:
-            model.to(dtype)
+        # Method 1: Standard .to() call — works on newer torch where _apply uses swap_tensors
+        try:
+            model.to(target_device)
+            if dtype is not None:
+                model.to(dtype)
+        except NotImplementedError:
+            # Older torch: Module._apply calls _has_compatible_shallow_copy_type which is
+            # not implemented for AffineQuantizedTensor. Move parameters manually.
+            logger.info(
+                "[_recursive_to_device] model.to() raised NotImplementedError "
+                "(AffineQuantizedTensor on older torch). Moving parameters individually."
+            )
+            for module in model.modules():
+                # Move non-quantized parameters and buffers directly
+                for param_name, param in module._parameters.items():
+                    if param is None:
+                        continue
+                    if self._is_on_target_device(param, target_device):
+                        continue
+                    if self._is_quantized_tensor(param):
+                        module._parameters[param_name] = self._move_quantized_param(param, target_device)
+                    else:
+                        module._parameters[param_name] = torch.nn.Parameter(
+                            param.data.to(target_device), requires_grad=param.requires_grad
+                        )
+                        if dtype is not None:
+                            module._parameters[param_name] = torch.nn.Parameter(
+                                module._parameters[param_name].data.to(dtype),
+                                requires_grad=param.requires_grad,
+                            )
+                for buf_name, buf in module._buffers.items():
+                    if buf is not None and not self._is_on_target_device(buf, target_device):
+                        module._buffers[buf_name] = buf.to(target_device)
         
         # Method 2: Use our thorough recursive moving for any missed modules
-        self._move_module_recursive(model, target_device, dtype)
+        # (skip if model.to() failed — we already moved everything above)
+        try:
+            self._move_module_recursive(model, target_device, dtype)
+        except NotImplementedError:
+            pass  # Already handled above
         
         # Method 3: Force move via state_dict if there are still parameters on wrong device
         wrong_device_params = []
@@ -781,18 +911,22 @@ class AceStepHandler:
                 wrong_device_params.append(name)
         
         if wrong_device_params and device != "cpu":
-            logger.warning(f"[_recursive_to_device] {len(wrong_device_params)} parameters on wrong device, using state_dict method")
-            # Get current state dict and move all tensors
-            state_dict = model.state_dict()
-            moved_state_dict = {}
-            for key, value in state_dict.items():
-                if isinstance(value, torch.Tensor):
-                    moved_state_dict[key] = value.to(target_device)
-                    if dtype is not None and moved_state_dict[key].is_floating_point():
-                        moved_state_dict[key] = moved_state_dict[key].to(dtype)
-                else:
-                    moved_state_dict[key] = value
-            model.load_state_dict(moved_state_dict)
+            logger.warning(f"[_recursive_to_device] {len(wrong_device_params)} parameters on wrong device after initial move, retrying individually")
+            for module in model.modules():
+                for param_name, param in module._parameters.items():
+                    if param is None or self._is_on_target_device(param, target_device):
+                        continue
+                    if self._is_quantized_tensor(param):
+                        module._parameters[param_name] = self._move_quantized_param(param, target_device)
+                    else:
+                        module._parameters[param_name] = torch.nn.Parameter(
+                            param.data.to(target_device), requires_grad=param.requires_grad
+                        )
+                        if dtype is not None and module._parameters[param_name].is_floating_point():
+                            module._parameters[param_name] = torch.nn.Parameter(
+                                module._parameters[param_name].data.to(dtype),
+                                requires_grad=param.requires_grad,
+                            )
         
         # Synchronize accelerator to ensure all transfers are complete
         if device != "cpu":
@@ -2788,22 +2922,6 @@ class AceStepHandler:
         if offload_wav_to_cpu is None:
             offload_wav_to_cpu = self._should_offload_wav_to_cpu()
         B, C, T = latents.shape
-        
-        # Check device type (handle both string and torch.device)
-        device_type = self.device if isinstance(self.device, str) else self.device.type
-        if device_type == "mps":
-            # MPS conv1d has an output length limit; use smaller chunks to avoid it.
-            max_chunk_size = 32
-            if chunk_size > max_chunk_size:
-                orig_chunk_size = chunk_size
-                orig_overlap = overlap
-                chunk_size = max_chunk_size
-                overlap = min(overlap, max(1, chunk_size // 4))
-                logger.warning(
-                    f"[tiled_decode] MPS device detected; reducing chunk_size from {orig_chunk_size} "
-                    f"to {max_chunk_size} and overlap from {orig_overlap} to {overlap} "
-                    f"to avoid MPS conv output limit."
-                )
         
         # If short enough, decode directly
         if T <= chunk_size:
