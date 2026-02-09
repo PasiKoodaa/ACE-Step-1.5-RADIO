@@ -1,4 +1,4 @@
-"""
+﻿"""
 Business Logic Handler
 Encapsulates all data processing and business logic as a bridge between model and UI
 """
@@ -166,26 +166,26 @@ class AceStepHandler:
             Status message
         """
         if self.model is None:
-            return "❌ Model not initialized. Please initialize service first."
+            return "âŒ Model not initialized. Please initialize service first."
         
         if not lora_path or not lora_path.strip():
-            return "❌ Please provide a LoRA path."
+            return "âŒ Please provide a LoRA path."
         
         lora_path = lora_path.strip()
         
         # Check if path exists
         if not os.path.exists(lora_path):
-            return f"❌ LoRA path not found: {lora_path}"
+            return f"âŒ LoRA path not found: {lora_path}"
         
         # Check if it's a valid PEFT adapter directory
         config_file = os.path.join(lora_path, "adapter_config.json")
         if not os.path.exists(config_file):
-            return f"❌ Invalid LoRA adapter: adapter_config.json not found in {lora_path}"
+            return f"âŒ Invalid LoRA adapter: adapter_config.json not found in {lora_path}"
         
         try:
             from peft import PeftModel, PeftConfig
         except ImportError:
-            return "❌ PEFT library not installed. Please install with: pip install peft"
+            return "âŒ PEFT library not installed. Please install with: pip install peft"
         
         try:
             import copy
@@ -212,11 +212,11 @@ class AceStepHandler:
             self.use_lora = True  # Enable LoRA by default after loading
             
             logger.info(f"LoRA adapter loaded successfully from {lora_path}")
-            return f"✅ LoRA loaded from {lora_path}"
+            return f"âœ… LoRA loaded from {lora_path}"
             
         except Exception as e:
             logger.exception("Failed to load LoRA adapter")
-            return f"❌ Failed to load LoRA: {str(e)}"
+            return f"âŒ Failed to load LoRA: {str(e)}"
     
     def unload_lora(self) -> str:
         """Unload LoRA adapter and restore base decoder.
@@ -225,10 +225,10 @@ class AceStepHandler:
             Status message
         """
         if not self.lora_loaded:
-            return "⚠️ No LoRA adapter loaded."
+            return "âš ï¸ No LoRA adapter loaded."
         
         if self._base_decoder is None:
-            return "❌ Base decoder backup not found. Cannot restore."
+            return "âŒ Base decoder backup not found. Cannot restore."
         
         try:
             import copy
@@ -242,11 +242,11 @@ class AceStepHandler:
             self.lora_scale = 1.0  # Reset scale to default
             
             logger.info("LoRA unloaded, base decoder restored")
-            return "✅ LoRA unloaded, using base model"
+            return "âœ… LoRA unloaded, using base model"
             
         except Exception as e:
             logger.exception("Failed to unload LoRA")
-            return f"❌ Failed to unload LoRA: {str(e)}"
+            return f"âŒ Failed to unload LoRA: {str(e)}"
     
     def set_use_lora(self, use_lora: bool) -> str:
         """Toggle LoRA usage for inference.
@@ -258,7 +258,7 @@ class AceStepHandler:
             Status message
         """
         if use_lora and not self.lora_loaded:
-            return "❌ No LoRA adapter loaded. Please load a LoRA first."
+            return "âŒ No LoRA adapter loaded. Please load a LoRA first."
         
         self.use_lora = use_lora
         
@@ -278,7 +278,7 @@ class AceStepHandler:
                 logger.warning(f"Could not toggle adapter layers: {e}")
         
         status = "enabled" if use_lora else "disabled"
-        return f"✅ LoRA {status}"
+        return f"âœ… LoRA {status}"
     
     def set_lora_scale(self, scale: float) -> str:
         """Set LoRA adapter scale/weight (0-1 range).
@@ -290,7 +290,7 @@ class AceStepHandler:
             Status message
         """
         if not self.lora_loaded:
-            return "⚠️ No LoRA loaded"
+            return "âš ï¸ No LoRA loaded"
         
         # Clamp scale to 0-1 range
         self.lora_scale = max(0.0, min(1.0, scale))
@@ -298,7 +298,7 @@ class AceStepHandler:
         # Only apply scaling if LoRA is enabled
         if not self.use_lora:
             logger.info(f"LoRA scale set to {self.lora_scale:.2f} (will apply when LoRA is enabled)")
-            return f"✅ LoRA scale: {self.lora_scale:.2f} (LoRA disabled)"
+            return f"âœ… LoRA scale: {self.lora_scale:.2f} (LoRA disabled)"
         
         # Iterate through LoRA layers only and set their scaling
         try:
@@ -326,13 +326,13 @@ class AceStepHandler:
             
             if modified_count > 0:
                 logger.info(f"LoRA scale set to {self.lora_scale:.2f} (modified {modified_count} modules)")
-                return f"✅ LoRA scale: {self.lora_scale:.2f}"
+                return f"âœ… LoRA scale: {self.lora_scale:.2f}"
             else:
                 logger.warning("No LoRA scaling attributes found to modify")
-                return f"⚠️ Scale set to {self.lora_scale:.2f} (no modules found)"
+                return f"âš ï¸ Scale set to {self.lora_scale:.2f} (no modules found)"
         except Exception as e:
             logger.warning(f"Could not set LoRA scale: {e}")
-            return f"⚠️ Scale set to {self.lora_scale:.2f} (partial)"
+            return f"âš ï¸ Scale set to {self.lora_scale:.2f} (partial)"
     
     def get_lora_status(self) -> Dict[str, Any]:
         """Get current LoRA status.
@@ -451,7 +451,7 @@ class AceStepHandler:
                 logger.info("[initialize_service] Main model not found, starting auto-download...")
                 success, msg = ensure_main_model(checkpoint_path, prefer_source=prefer_source)
                 if not success:
-                    return f"❌ Failed to download main model: {msg}", False
+                    return f"âŒ Failed to download main model: {msg}", False
                 logger.info(f"[initialize_service] {msg}")
 
             # Check and download the requested DiT model
@@ -459,7 +459,7 @@ class AceStepHandler:
                 logger.info(f"[initialize_service] DiT model '{config_path}' not found, starting auto-download...")
                 success, msg = ensure_dit_model(config_path, checkpoint_path, prefer_source=prefer_source)
                 if not success:
-                    return f"❌ Failed to download DiT model '{config_path}': {msg}", False
+                    return f"âŒ Failed to download DiT model '{config_path}': {msg}", False
                 logger.info(f"[initialize_service] {msg}")
 
             # 1. Load main model
@@ -603,7 +603,7 @@ class AceStepHandler:
             # Determine actual attention implementation used
             actual_attn = getattr(self.config, "_attn_implementation", "eager")
             
-            status_msg = f"✅ Model initialized successfully on {device}\n"
+            status_msg = f"âœ… Model initialized successfully on {device}\n"
             status_msg += f"Main model: {acestep_v15_checkpoint_path}\n"
             status_msg += f"VAE: {vae_checkpoint_path}\n"
             status_msg += f"Text encoder: {text_encoder_path}\n"
@@ -629,7 +629,7 @@ class AceStepHandler:
             return status_msg, True
             
         except Exception as e:
-            error_msg = f"❌ Error initializing model: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            error_msg = f"âŒ Error initializing model: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             logger.exception("[initialize_service] Error initializing model")
             return error_msg, False
 
@@ -1732,23 +1732,23 @@ class AceStepHandler:
             Formatted codes string like '<|audio_code_123|><|audio_code_456|>...' or error message
         """
         if audio_file is None:
-            return "❌ Please upload source audio first"
+            return "âŒ Please upload source audio first"
         
         if self.model is None or self.vae is None:
-            return "❌ Model not initialized. Please initialize the service first."
+            return "âŒ Model not initialized. Please initialize the service first."
         
         try:
             # Process audio file
             processed_audio = self.process_src_audio(audio_file)
             if processed_audio is None:
-                return "❌ Failed to process audio file"
+                return "âŒ Failed to process audio file"
             
             # Encode audio to latents using VAE
             with torch.inference_mode():
                 with self._load_model_context("vae"):
                     # Check if audio is silence
                     if self.is_silence(processed_audio.unsqueeze(0)):
-                        return "❌ Audio file appears to be silent"
+                        return "âŒ Audio file appears to be silent"
                     
                     # Encode to latents using helper method
                     latents = self._encode_audio_to_latents(processed_audio)  # [T, d]
@@ -1775,7 +1775,7 @@ class AceStepHandler:
                     return codes_string
                     
         except Exception as e:
-            error_msg = f"❌ Error converting audio to codes: {str(e)}\n{traceback.format_exc()}"
+            error_msg = f"âŒ Error converting audio to codes: {str(e)}\n{traceback.format_exc()}"
             logger.exception("[convert_src_audio_to_codes] Error converting audio to codes")
             return error_msg
         
@@ -2285,14 +2285,6 @@ class AceStepHandler:
             
             # Format text prompt with custom instruction (using LM-generated caption if available)
             text_prompt = SFT_GEN_PROMPT.format(instruction, actual_caption, parsed_metas[i])
-
-            # DEBUG: Print DiT text encoder input for verification
-            if i == 0:
-                logger.info(f"\n{'='*70}")
-                logger.info("🔍 [DEBUG] DiT TEXT ENCODER INPUT (Inference)")
-                logger.info(f"{'='*70}")
-                logger.info(f"text_prompt:\n{text_prompt}")
-                logger.info(f"{'='*70}\n")
 
             # Tokenize text
             text_inputs_dict = self.text_tokenizer(
@@ -3186,7 +3178,7 @@ class AceStepHandler:
         if self.model is None or self.vae is None or self.text_tokenizer is None or self.text_encoder is None:
             return {
                 "audios": [],
-                "status_message": "❌ Model not fully initialized. Please initialize all components first.",
+                "status_message": "âŒ Model not fully initialized. Please initialize all components first.",
                 "extra_outputs": {},
                 "success": False,
                 "error": "Model not fully initialized",
@@ -3454,7 +3446,7 @@ class AceStepHandler:
                 audio_tensor = pred_wavs[i].cpu()
                 audio_tensors.append(audio_tensor)
             
-            status_message = f"✅ Generation completed successfully!"
+            status_message = f"âœ… Generation completed successfully!"
             logger.info(f"[generate_music] Done! Generated {len(audio_tensors)} audio tensors.")
             
             # Extract intermediate information from outputs
@@ -3505,7 +3497,7 @@ class AceStepHandler:
             }
 
         except Exception as e:
-            error_msg = f"❌ Error: {str(e)}\n{traceback.format_exc()}"
+            error_msg = f"âŒ Error: {str(e)}\n{traceback.format_exc()}"
             logger.exception("[generate_music] Generation failed")
             return {
                 "audios": [],
@@ -3961,3 +3953,4 @@ class AceStepHandler:
                 "success": False,
                 "error": error_msg
             }
+
