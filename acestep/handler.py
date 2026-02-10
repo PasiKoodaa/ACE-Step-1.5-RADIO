@@ -2906,6 +2906,10 @@ class AceStepHandler:
         
         return outputs
 
+    # MPS-safe chunk parameters (class-level for testability)
+    _MPS_DECODE_CHUNK_SIZE = 32
+    _MPS_DECODE_OVERLAP = 8
+
     def tiled_decode(self, latents, chunk_size: Optional[int] = None, overlap: int = 64, offload_wav_to_cpu: Optional[bool] = None):
         """
         Decode latents using tiling to reduce VRAM usage.
@@ -2921,6 +2925,57 @@ class AceStepHandler:
             chunk_size = self._get_auto_decode_chunk_size()
         if offload_wav_to_cpu is None:
             offload_wav_to_cpu = self._should_offload_wav_to_cpu()
+        
+        # MPS Conv1d has a hard output-size limit that the OobleckDecoder
+        # exceeds during temporal upsampling with large chunks.  Reduce
+        # chunk_size to keep each VAE decode within the MPS kernel limits
+        # while keeping computation on the fast MPS accelerator.
+        _is_mps = (self.device == "mps")
+        if _is_mps:
+            _mps_chunk = self._MPS_DECODE_CHUNK_SIZE
+            _mps_overlap = self._MPS_DECODE_OVERLAP
+            _needs_reduction = (chunk_size > _mps_chunk) or (overlap > _mps_overlap)
+            if _needs_reduction:
+                logger.warning(
+                    f"[tiled_decode] MPS device detected; reducing chunk_size from {chunk_size} "
+                    f"to {min(chunk_size, _mps_chunk)} and overlap from {overlap} "
+                    f"to {min(overlap, _mps_overlap)} to avoid MPS conv output limit."
+                )
+                chunk_size = min(chunk_size, _mps_chunk)
+                overlap = min(overlap, _mps_overlap)
+        
+        try:
+            return self._tiled_decode_inner(latents, chunk_size, overlap, offload_wav_to_cpu)
+        except (NotImplementedError, RuntimeError) as exc:
+            if not _is_mps:
+                raise  # only catch MPS-related errors
+            # Safety fallback: if the MPS tiled path still fails (e.g. very
+            # short latent that went through direct decode, or a future PyTorch
+            # MPS regression), transparently retry on CPU.
+            logger.warning(
+                f"[tiled_decode] MPS decode failed ({type(exc).__name__}: {exc}), "
+                f"falling back to CPU VAE decode..."
+            )
+            return self._tiled_decode_cpu_fallback(latents)
+
+    def _tiled_decode_cpu_fallback(self, latents):
+        """Last-resort CPU VAE decode when MPS fails unexpectedly."""
+        _first_param = next(self.vae.parameters())
+        vae_device = _first_param.device
+        vae_dtype = _first_param.dtype
+        try:
+            self.vae = self.vae.cpu().float()
+            latents_cpu = latents.to(device="cpu", dtype=torch.float32)
+            decoder_output = self.vae.decode(latents_cpu)
+            result = decoder_output.sample
+            del decoder_output
+            return result
+        finally:
+            # Always restore VAE to original device/dtype
+            self.vae = self.vae.to(vae_dtype).to(vae_device)
+
+    def _tiled_decode_inner(self, latents, chunk_size, overlap, offload_wav_to_cpu):
+        """Core tiled decode logic (extracted for fallback wrapping)."""
         B, C, T = latents.shape
         
         # If short enough, decode directly

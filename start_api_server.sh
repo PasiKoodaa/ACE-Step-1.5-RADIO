@@ -28,7 +28,7 @@ DOWNLOAD_SOURCE=""
 #   - <=6GB VRAM: LLM disabled (DiT-only mode)
 #   - >6GB VRAM: LLM enabled
 # Values: auto (default), true (force enable), false (force disable)
-# export ACESTEP_INIT_LLM=auto
+export ACESTEP_INIT_LLM=auto
 # export ACESTEP_INIT_LLM=true
 # export ACESTEP_INIT_LLM=false
 
@@ -40,6 +40,11 @@ LM_MODEL_PATH=""
 # Update check on startup (set to "false" to disable)
 CHECK_UPDATE="true"
 # CHECK_UPDATE="false"
+
+# Skip model loading at startup (models will be lazy-loaded on first request)
+# Set to "true" to start server quickly without loading models
+# export ACESTEP_NO_INIT=false
+# export ACESTEP_NO_INIT=true
 
 # ==================== Launch ====================
 

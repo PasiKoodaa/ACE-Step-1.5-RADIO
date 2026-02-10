@@ -25,7 +25,7 @@ REM By default, LLM is auto-enabled/disabled based on GPU VRAM:
 REM   - <=6GB VRAM: LLM disabled (DiT-only mode)
 REM   - >6GB VRAM: LLM enabled
 REM Values: auto (default), true (force enable), false (force disable)
-REM set ACESTEP_INIT_LLM=auto
+set ACESTEP_INIT_LLM=auto
 REM set ACESTEP_INIT_LLM=true
 REM set ACESTEP_INIT_LLM=false
 
@@ -36,6 +36,11 @@ REM set LM_MODEL_PATH=--lm-model-path acestep-5Hz-lm-0.6B
 REM Update check on startup (set to false to disable)
 set CHECK_UPDATE=true
 REM set CHECK_UPDATE=false
+
+REM Skip model loading at startup (models will be lazy-loaded on first request)
+REM Set to true to start server quickly without loading models
+REM set ACESTEP_NO_INIT=false
+REM set ACESTEP_NO_INIT=true
 
 REM ==================== Launch ====================
 
