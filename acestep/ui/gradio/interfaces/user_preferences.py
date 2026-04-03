@@ -148,11 +148,14 @@ def _build_restore_js(num_outputs: int) -> str:
             }});
             // If none of the keys had stored values, skip entirely.
             if (result.every(v => v === null)) return SKIP;
-            // Compute mp3_controls_row visibility from audio_format (index 0).
-            // When audioFormat is null (no stored value), push null so Python
+            // Compute mp3 control visibility from audio_format (index 0).
+            // Push 3 extra values: mp3_controls_row, mp3_bitrate, mp3_sample_rate
+            // matching the outputs of _update_mp3_control_visibility().
+            // When audioFormat is null (no stored value), push nulls so Python
             // emits gr.update() and preserves whatever init_params set.
             const audioFormat = result[0];
-            result.push(audioFormat === null ? null : audioFormat === "mp3");
+            const mp3 = audioFormat === null ? null : audioFormat === "mp3";
+            result.push(mp3, mp3, mp3);
             return result;
         }} catch (_e) {{
             return SKIP;
@@ -163,13 +166,14 @@ def _build_restore_js(num_outputs: int) -> str:
 def restore_preferences(*values: Any) -> tuple[Any, ...]:
     """Map JS restore results into Gradio output values.
 
-    The JS function reads localStorage and produces an array.  Values
-    that are ``None`` (JSON ``null``) mean "no stored preference for this
-    key" -- we return ``gr.update()`` so Gradio leaves the component
-    unchanged, preserving whatever ``init_params`` set.
+    The JS function reads localStorage and produces an array:
+      - First ``len(PREF_KEYS)`` elements are preference values (or null).
+      - Next 3 elements are mp3 visibility booleans (or null):
+        [mp3_controls_row, mp3_bitrate, mp3_sample_rate].
 
-    The last element (beyond ``PREF_KEYS``) is the mp3_controls_row
-    visibility boolean -- converted to ``gr.update(visible=...)``.
+    ``None`` (JSON ``null``) → ``gr.update()`` (no-op, preserves current).
+    Booleans beyond PREF_KEYS → visibility/interactivity updates matching
+    ``_update_mp3_control_visibility()`` from the output controls module.
     """
     import gradio as gr
 
@@ -178,9 +182,12 @@ def restore_preferences(*values: Any) -> tuple[Any, ...]:
     for i, v in enumerate(values):
         if v is None:
             results.append(gr.update())
-        elif i >= n_prefs and isinstance(v, bool):
-            # Extra outputs beyond PREF_KEYS are visibility flags.
+        elif i == n_prefs and isinstance(v, bool):
+            # mp3_controls_row: visibility only.
             results.append(gr.update(visible=v))
+        elif i > n_prefs and isinstance(v, bool):
+            # mp3_bitrate, mp3_sample_rate: visibility + interactivity.
+            results.append(gr.update(visible=v, interactive=v))
         else:
             results.append(v)
     return tuple(results)
@@ -221,13 +228,16 @@ def wire_preference_restore(
             )
         outputs.append(component)
 
-    # Also update mp3_controls_row visibility so it stays in sync when the
+    # Also update mp3 control visibility so it stays in sync when the
     # restored audio_format differs from the server-rendered default.
     # Gradio does not fire .change() for load-time value assignments, so
-    # without this the MP3 row could be visible/hidden incorrectly.
-    mp3_row = generation_section.get("mp3_controls_row")
-    if mp3_row is not None:
-        outputs.append(mp3_row)
+    # without this the MP3 row and its children could be visible/hidden
+    # incorrectly.  The three extra outputs mirror the return of
+    # _update_mp3_control_visibility(): [row, bitrate, sample_rate].
+    for mp3_key in ("mp3_controls_row", "mp3_bitrate", "mp3_sample_rate"):
+        comp = generation_section.get(mp3_key)
+        if comp is not None:
+            outputs.append(comp)
 
     demo.load(
         fn=restore_preferences,

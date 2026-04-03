@@ -107,7 +107,7 @@ class SaveScriptTests(unittest.TestCase):
         self.assertEqual(script_1, script_2)
 
 
-_NUM_OUTPUTS = len(PREF_KEYS) + 1  # +1 for mp3_controls_row
+_NUM_OUTPUTS = len(PREF_KEYS) + 3  # +3 for mp3_controls_row, mp3_bitrate, mp3_sample_rate
 
 
 class RestoreTests(unittest.TestCase):
@@ -177,16 +177,27 @@ class RestoreTests(unittest.TestCase):
             self.assertIsInstance(v, dict, "None should be converted to gr.update()")
             self.assertEqual(v["__type__"], "update")
 
-    def test_restore_preferences_converts_visibility_bool(self):
-        """The trailing boolean for mp3_controls_row should become
-        gr.update(visible=...) not a raw bool."""
-        values = ("mp3", "128k", 48000, 0.5, True, -1.0, 0.0, 0.0, 0.0, 1.0, 8, True)
+    def test_restore_preferences_converts_visibility_bools(self):
+        """The trailing booleans for mp3 controls should become
+        gr.update(visible=...) not raw bools."""
+        # 11 pref values + 3 mp3 visibility bools
+        values = ("mp3", "128k", 48000, 0.5, True, -1.0, 0.0, 0.0, 0.0, 1.0, 8, True, True, True)
         result = restore_preferences(*values)
-        last = result[-1]
-        # Should NOT be a raw bool; should be a gr.update(visible=True) dict.
-        self.assertIsInstance(last, dict)
-        self.assertEqual(last["__type__"], "update")
-        self.assertTrue(last["visible"])
+        # mp3_controls_row (index 11): visible only
+        row_update = result[11]
+        self.assertIsInstance(row_update, dict)
+        self.assertTrue(row_update["visible"])
+        self.assertNotIn("interactive", row_update)
+        # mp3_bitrate (index 12): visible + interactive
+        bitrate_update = result[12]
+        self.assertIsInstance(bitrate_update, dict)
+        self.assertTrue(bitrate_update["visible"])
+        self.assertTrue(bitrate_update["interactive"])
+        # mp3_sample_rate (index 13): visible + interactive
+        sr_update = result[13]
+        self.assertIsInstance(sr_update, dict)
+        self.assertTrue(sr_update["visible"])
+        self.assertTrue(sr_update["interactive"])
 
     def test_pref_keys_match_defaults(self):
         """Every PREF_KEY must have a corresponding default."""
