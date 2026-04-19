@@ -14,14 +14,12 @@ You should already have Ace-Step 1.5 installed.
 
 ### 2. Start the Services
 
-Run each command in a separate terminal window:
+Run command in a terminal window:
 
 | Service | Command | Port |
 |---------|---------|------|
 | **ACE-Step API** | `uv run acestep-api --port 8001` | `8001` |
 
-
-> 💡 **Tip:** Keep both terminals running while using the radio.
 
 ### 3. Configure LM Studio
 
