@@ -11,11 +11,6 @@ https://github.com/user-attachments/assets/e700ae4d-cb5c-4f08-b80f-adeebfc4a0f4
 
 You should already have Ace-Step 1.5 installed.
 
-Install Python packages for the proxy server:
-
-```bash
-pip install flask flask-cors requests
-```
 
 ### 2. Start the Services
 
@@ -24,7 +19,7 @@ Run each command in a separate terminal window:
 | Service | Command | Port |
 |---------|---------|------|
 | **ACE-Step API** | `uv run acestep-api --port 8001` | `8001` |
-| **Proxy Server** | `python proxy-server.py` | `8002` *(default)* |
+
 
 > 💡 **Tip:** Keep both terminals running while using the radio.
 
