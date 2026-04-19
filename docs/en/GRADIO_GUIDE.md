@@ -11,7 +11,6 @@ This guide provides comprehensive documentation for using the ACE-Step Gradio we
 - [Getting Started](#getting-started)
 - [Service Configuration](#service-configuration)
 - [Generation Modes](#generation-modes)
-- [Task Types](#task-types)
 - [Input Parameters](#input-parameters)
 - [Advanced Settings](#advanced-settings)
 - [Results Section](#results-section)
@@ -37,14 +36,14 @@ python app.py --port 7860
 
 ### Interface Overview
 
-The Gradio interface consists of several main sections:
+The Gradio interface is organized as follows:
 
-1. **Service Configuration** - Model loading and initialization
-2. **Required Inputs** - Task type, audio uploads, and generation mode
-3. **Music Caption & Lyrics** - Text inputs for generation
-4. **Optional Parameters** - Metadata like BPM, key, duration
-5. **Advanced Settings** - Fine-grained control over generation
-6. **Results** - Generated audio playback and management
+1. **Settings** (collapsed accordion) - Service configuration, DiT/LM parameters, output options
+2. **Generation Tab** - The main workspace with a **Generation Mode** radio selector:
+   - Turbo/SFT models: Simple, Custom, Remix, Repaint
+   - Base model: Simple, Custom, Remix, Repaint, Extract, Lego, Complete
+3. **Results Section** - Generated audio playback, scoring, batch navigation
+4. **Training Tab** - Dataset builder and LoRA training
 
 ---
 
@@ -62,17 +61,23 @@ The Gradio interface consists of several main sections:
 
 | Setting | Description |
 |---------|-------------|
-| **5Hz LM Model Path** | Select the language model (e.g., `acestep-5Hz-lm-0.6B`, `acestep-5Hz-lm-1.7B`) |
-| **5Hz LM Backend** | `vllm` (faster, recommended) or `pt` (PyTorch, more compatible) |
-| **Initialize 5Hz LM** | Check to load the LM during initialization (required for thinking mode) |
+| **5Hz LM Model Path** | Select the language model. **Available models are filtered by your GPU tier** — e.g., 6-8GB GPUs only show 0.6B, while 24GB+ GPUs show all sizes (0.6B, 1.7B, 4B). |
+| **5Hz LM Backend** | `vllm` (faster, recommended for NVIDIA with ≥8GB VRAM), `pt` (PyTorch, universal fallback), or `mlx` (Apple Silicon). **On GPUs <8GB, the backend is restricted to `pt`/`mlx`** because vllm's KV cache is too memory-hungry. |
+| **Initialize 5Hz LM** | Check to load the LM during initialization (required for thinking mode). **Automatically unchecked and disabled on GPUs ≤6GB** (Tier 1-2). |
+
+> **Adaptive Defaults**: All LM settings are automatically configured based on your GPU's VRAM tier. The recommended LM model, backend, and initialization state are pre-set for optimal performance. You can manually override these, but the system will warn you if your selection is incompatible with your GPU.
 
 ### Performance Options
 
 | Setting | Description |
 |---------|-------------|
 | **Use Flash Attention** | Enable for faster inference (requires flash_attn package) |
-| **Offload to CPU** | Offload models to CPU when idle to save GPU memory |
-| **Offload DiT to CPU** | Specifically offload the DiT model to CPU |
+| **Offload to CPU** | Offload models to CPU when idle to save GPU memory. **Automatically enabled on GPUs <20GB.** |
+| **Offload DiT to CPU** | Specifically offload the DiT model to CPU. **Automatically enabled on GPUs <12GB.** |
+| **INT8 Quantization** | Reduce model VRAM footprint with INT8 weight quantization. **Automatically enabled on GPUs <20GB.** |
+| **Compile Model** | Enable `torch.compile` for optimized inference. **Enabled by default on all tiers** (required when quantization is active). |
+
+> **Tier-Aware Settings**: Offload, quantization, and compile options are automatically set based on your GPU tier. See [GPU_COMPATIBILITY.md](GPU_COMPATIBILITY.md) for the full tier table.
 
 ### LoRA Adapter
 
@@ -87,18 +92,25 @@ The Gradio interface consists of several main sections:
 
 ### Initialization
 
-Click **Initialize Service** to load the models. The status box will show progress and confirmation.
+Click **Initialize Service** to load the models. The status box will show progress and confirmation, including:
+- The detected GPU tier and VRAM
+- Maximum allowed duration and batch size (adjusted dynamically based on whether LM was initialized)
+- Any warnings about incompatible settings that were automatically corrected
+
+After initialization, the **Audio Duration** and **Batch Size** sliders are automatically updated to reflect the tier's limits.
 
 ---
 
 ## Generation Modes
 
+The **Generation Mode** radio selector at the top of the Generation tab determines your workflow. Turbo and SFT models offer four modes; Base models add three more.
+
 ### Simple Mode
 
-Simple mode is designed for quick, natural language-based music generation.
+Designed for quick, natural language-based music generation.
 
 **How to use:**
-1. Select "Simple" in the Generation Mode radio button
+1. Select **Simple** in the Generation Mode radio
 2. Enter a natural language description in the "Song Description" field
 3. Optionally check "Instrumental" if you don't want vocals
 4. Optionally select a preferred vocal language
@@ -116,108 +128,93 @@ Simple mode is designed for quick, natural language-based music generation.
 
 ### Custom Mode
 
-Custom mode provides full control over all generation parameters.
+Full control over all generation parameters (text2music).
 
 **How to use:**
-1. Select "Custom" in the Generation Mode radio button
+1. Select **Custom** in the Generation Mode radio
 2. Manually fill in the Caption and Lyrics fields
-3. Set optional metadata (BPM, Key, Duration, etc.)
-4. Optionally click **Format** to enhance your input using the LM
-5. Configure advanced settings as needed
-6. Click **Generate Music** to create the audio
+3. Optionally upload Reference Audio for style guidance
+4. Set optional metadata (BPM, Key, Duration, etc.)
+5. Optionally click **Format** to enhance your input using the LM
+6. Configure advanced settings as needed
+7. Click **Generate Music** to create the audio
 
----
+### Remix Mode
 
-## Task Types
+Transform existing audio while maintaining its melodic structure but changing style.
 
-### text2music (Default)
+**How to use:**
+1. Select **Remix** in the Generation Mode radio
+2. Upload Source Audio (the song to remix)
+3. Write a Caption describing the target style
+4. Optionally modify Lyrics
+5. Adjust **Remix Strength** (0.0-1.0): higher = closer to original structure
+6. Click **Generate Music**
 
-Generate music from text descriptions and/or lyrics.
+**Use cases:** Creating cover versions, style transfer, generating variants of a song.
 
-**Use case:** Creating new music from scratch based on prompts.
+### Repaint Mode
 
-**Required inputs:** Caption or Lyrics (at least one)
+Regenerate a specific time segment of audio while keeping the rest intact.
 
-### cover
+**How to use:**
+1. Select **Repaint** in the Generation Mode radio
+2. Upload Source Audio
+3. Set **Repainting Start** and **Repainting End** (seconds; -1 for end of file)
+4. Write a Caption describing the desired content for the repainted section
+5. Click **Generate Music**
 
-Transform existing audio while maintaining structure but changing style.
+**Use cases:** Fixing problematic sections, changing lyrics in a segment, extending songs.
 
-**Use case:** Creating cover versions in different styles.
-
-**Required inputs:**
-- Source Audio (upload in Audio Uploads section)
-- Caption describing the target style
-
-**Key parameter:** `Audio Cover Strength` (0.0-1.0)
-- Higher values maintain more of the original structure
-- Lower values allow more creative freedom
-
-### repaint
-
-Regenerate a specific time segment of audio.
-
-**Use case:** Fixing or modifying specific sections of generated music.
-
-**Required inputs:**
-- Source Audio
-- Repainting Start (seconds)
-- Repainting End (seconds, -1 for end of file)
-- Caption describing the desired content
-
-### lego (Base Model Only)
-
-Generate a specific instrument track in context of existing audio.
-
-**Use case:** Adding instrument layers to backing tracks.
-
-**Required inputs:**
-- Source Audio
-- Track Name (select from dropdown)
-- Caption describing the track characteristics
-
-**Available tracks:** vocals, backing_vocals, drums, bass, guitar, keyboard, percussion, strings, synth, fx, brass, woodwinds
-
-### extract (Base Model Only)
+### Extract Mode (Base Model Only)
 
 Extract/isolate a specific instrument track from mixed audio.
 
-**Use case:** Stem separation, isolating instruments.
+**How to use:**
+1. Select **Extract** in the Generation Mode radio
+2. Upload Source Audio
+3. Select the **Track Name** to extract from the dropdown
+4. Click **Generate Music**
 
-**Required inputs:**
-- Source Audio
-- Track Name to extract
+**Available tracks:** vocals, backing_vocals, drums, bass, guitar, keyboard, percussion, strings, synth, fx, brass, woodwinds
 
-### complete (Base Model Only)
+### Lego Mode (Base Model Only)
 
-Complete partial tracks with specified instruments.
+Add a new instrument track to existing audio.
 
-**Use case:** Auto-arranging incomplete compositions.
+**How to use:**
+1. Select **Lego** in the Generation Mode radio
+2. Upload Source Audio
+3. Select the **Track Name** to add from the dropdown
+4. Write a Caption describing the track characteristics
+5. Click **Generate Music**
 
-**Required inputs:**
-- Source Audio
-- Track Names (multiple selection)
-- Caption describing the desired style
+### Complete Mode (Base Model Only)
+
+Complete partial tracks with specified instruments (auto-arrangement).
+
+**How to use:**
+1. Select **Complete** in the Generation Mode radio
+2. Upload Source Audio
+3. Select multiple **Track Names** to add
+4. Write a Caption describing the desired style
+5. Click **Generate Music**
 
 ---
 
 ## Input Parameters
 
-### Required Inputs
-
-#### Task Type
-Select the generation task from the dropdown. The instruction field updates automatically based on the selected task.
-
-#### Audio Uploads
+### Audio Inputs
 
 | Field | Description |
 |-------|-------------|
-| **Reference Audio** | Optional audio for style reference |
-| **Source Audio** | Required for cover, repaint, lego, extract, complete tasks |
+| **Reference Audio** | Optional audio for style/timbre guidance (visible in Custom mode) |
+| **Source Audio** | Required for Remix, Repaint, Extract, Lego, Complete modes |
 | **Convert to Codes** | Extract 5Hz semantic codes from source audio |
 
-#### LM Codes Hints
+#### LM Codes Hints (Custom Mode)
 
-Pre-computed audio semantic codes can be pasted here to guide generation. Use the **Transcribe** button to analyze codes and extract metadata.
+Pre-computed audio semantic codes can be pasted here to guide generation. Use the **Transcribe** button to analyze codes and extract metadata. This is an advanced feature for controlling melodic structure without uploading source audio.
 
 ### Music Caption
 
@@ -262,7 +259,7 @@ This is where I belong
 | **Key Scale** | Auto | Musical key (e.g., "C Major", "Am", "F# minor") |
 | **Time Signature** | Auto | Time signature: 2 (2/4), 3 (3/4), 4 (4/4), 6 (6/8) |
 | **Audio Duration** | Auto/-1 | Target length in seconds (10-600). -1 for automatic |
-| **Batch Size** | 2 | Number of audio variations to generate (1-8) |
+| **Batch Size** | 2 | Number of audio variations to generate (1-8). **Value persists across mode changes and enhancement actions**. Can be set via `--batch_size` CLI argument |
 
 ---
 
@@ -276,7 +273,7 @@ This is where I belong
 | **Guidance Scale** | 7.0 | CFG strength (base model only). Higher = follows prompt more |
 | **Seed** | -1 | Random seed. Use comma-separated values for batches |
 | **Random Seed** | ✓ | When checked, generates random seeds |
-| **Audio Format** | mp3 | Output format: mp3, flac |
+| **Audio Format** | mp3 | Output format: flac, mp3, opus, aac, wav, wav32 |
 | **Shift** | 3.0 | Timestep shift factor (1.0-5.0). Recommended 3.0 for turbo |
 | **Inference Method** | ode | ode (Euler, faster) or sde (stochastic) |
 | **Custom Timesteps** | - | Override timesteps (e.g., "0.97,0.76,0.615,0.5,0.395,0.28,0.18,0.085,0") |
@@ -320,7 +317,7 @@ This is where I belong
 
 | Control | Description |
 |---------|-------------|
-| **Think** | Enable 5Hz LM for code generation and metadata |
+| **Think** | Enable 5Hz LM for code generation and metadata. **Note:** Automatically ignored for Cover, Repaint, and Extract tasks — these tasks use source audio directly and skip the LM regardless of this setting. |
 | **ParallelThinking** | Enable parallel LM batch processing |
 | **CaptionRewrite** | Let LM enhance the input caption |
 | **AutoGen** | Automatically start next batch after completion |
@@ -370,6 +367,8 @@ The "Batch Results & Generation Details" accordion contains:
 ## LoRA Training
 
 The LoRA Training tab provides tools for creating custom LoRA adapters.
+
+> 📖 **For a comprehensive step-by-step walkthrough** (data preparation, annotation, preprocessing, training, and export), see the [LoRA Training Tutorial](./LoRA_Training_Tutorial.md).
 
 ### Dataset Builder Tab
 
@@ -527,14 +526,18 @@ These options are especially useful when preprocessing takes a long time or you 
 - Make caption more specific
 
 **Out of memory:**
-- Reduce batch size
-- Enable CPU offloading
+- The system includes automatic VRAM management (VRAM guard, adaptive VAE decode, auto batch reduction). If OOM still occurs:
+- Reduce batch size manually
+- Enable CPU offloading (should be auto-enabled for GPUs <20GB)
+- Enable INT8 quantization (should be auto-enabled for GPUs <20GB)
 - Reduce LM batch chunk size
+- See [GPU_COMPATIBILITY.md](GPU_COMPATIBILITY.md) for recommended settings per tier
 
 **LM not working:**
-- Ensure "Initialize 5Hz LM" was checked during initialization
-- Check that a valid LM model path is selected
-- Verify vllm or PyTorch backend is available
+- Ensure "Initialize 5Hz LM" was checked during initialization (disabled by default on GPUs ≤6GB)
+- Check that a valid LM model path is selected (only tier-compatible models are shown)
+- Verify vllm or PyTorch backend is available (vllm restricted on GPUs <8GB)
+- If the LM checkbox is grayed out, your GPU tier does not support LM — use DiT-only mode
 
 ---
 

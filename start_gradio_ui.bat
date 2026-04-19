@@ -3,21 +3,31 @@ setlocal enabledelayedexpansion
 REM ACE-Step Gradio Web UI Launcher
 REM This script launches the Gradio web interface for ACE-Step
 
+REM ==================== Load .env Configuration ====================
+REM Load settings from .env file if it exists
+call :LoadEnvFile
+
 REM ==================== Configuration ====================
-REM Uncomment and modify the parameters below as needed
+REM Default values (used if not set in .env file)
+REM You can override these by uncommenting and modifying the lines below
+REM or by creating a .env file (recommended to survive updates)
 
 REM Server settings
-set PORT=7860
-set SERVER_NAME=127.0.0.1
+if not defined PORT set PORT=7860
+if not defined SERVER_NAME set SERVER_NAME=127.0.0.1
 REM set SERVER_NAME=0.0.0.0
 REM set SHARE=--share
 
 REM UI language: en, zh, he, ja
-set LANGUAGE=en
+if not defined LANGUAGE set LANGUAGE=en
+
+REM Batch size: default batch size for generation (1 to GPU-dependent max)
+REM When not specified, defaults to min(2, GPU_max)
+REM set BATCH_SIZE=--batch_size 4
 
 REM Model settings
-set CONFIG_PATH=--config_path acestep-v15-turbo
-set LM_MODEL_PATH=--lm_model_path acestep-5Hz-lm-0.6B
+if not defined CONFIG_PATH set CONFIG_PATH=--config_path acestep-v15-turbo
+if not defined LM_MODEL_PATH set LM_MODEL_PATH=--lm_model_path acestep-5Hz-lm-0.6B
 REM set OFFLOAD_TO_CPU=--offload_to_cpu true
 
 REM LLM (Language Model) initialization settings
@@ -33,14 +43,14 @@ REM Download source settings
 REM Preferred download source: auto (default), huggingface, or modelscope
 REM set DOWNLOAD_SOURCE=--download-source modelscope
 REM set DOWNLOAD_SOURCE=--download-source huggingface
-set DOWNLOAD_SOURCE=
+if not defined DOWNLOAD_SOURCE set DOWNLOAD_SOURCE=
 
 REM Update check on startup (set to false to disable)
-set CHECK_UPDATE=true
+if not defined CHECK_UPDATE set CHECK_UPDATE=true
 REM set CHECK_UPDATE=false
 
 REM Auto-initialize models on startup
-set INIT_SERVICE=--init_service true
+if not defined INIT_SERVICE set INIT_SERVICE=--init_service true
 
 REM API settings (enable REST API alongside Gradio)
 REM set ENABLE_API=--enable-api
@@ -128,11 +138,11 @@ echo Server will be available at: http://%SERVER_NAME%:%PORT%
 echo.
 
 REM Auto-detect Python environment
-if exist "%~dp0python_embeded\python.exe" (
+if exist "%~dp0python_embedded\python.exe" (
     echo [Environment] Using embedded Python...
 
     REM Build command with optional parameters
-    set "PYTHON_EXE=%~dp0python_embeded\python.exe"
+    set "PYTHON_EXE=%~dp0python_embedded\python.exe"
     set "SCRIPT_PATH=%~dp0acestep\acestep_v15_pipeline.py"
     set "CMD=--port %PORT% --server-name %SERVER_NAME% --language %LANGUAGE%"
     if not "%SHARE%"=="" set "CMD=!CMD! %SHARE%"
@@ -142,6 +152,7 @@ if exist "%~dp0python_embeded\python.exe" (
     if not "%INIT_LLM%"=="" set "CMD=!CMD! %INIT_LLM%"
     if not "%DOWNLOAD_SOURCE%"=="" set "CMD=!CMD! %DOWNLOAD_SOURCE%"
     if not "%INIT_SERVICE%"=="" set "CMD=!CMD! %INIT_SERVICE%"
+    if not "%BATCH_SIZE%"=="" set "CMD=!CMD! %BATCH_SIZE%"
     if not "%ENABLE_API%"=="" set "CMD=!CMD! %ENABLE_API%"
     if not "%API_KEY%"=="" set "CMD=!CMD! %API_KEY%"
     if not "%AUTH_USERNAME%"=="" set "CMD=!CMD! %AUTH_USERNAME%"
@@ -160,7 +171,7 @@ if exist "%~dp0python_embeded\python.exe" (
         echo ========================================
         echo.
         echo ACE-Step requires either:
-        echo   1. python_embeded directory ^(portable package^)
+        echo   1. python_embedded directory ^(portable package^)
         echo   2. uv package manager
         echo.
         echo Would you like to install uv now? ^(Recommended^)
@@ -257,18 +268,25 @@ if exist "%~dp0python_embeded\python.exe" (
 
         if !ERRORLEVEL! NEQ 0 (
             echo.
-            echo ========================================
-            echo [Error] Failed to setup environment
-            echo ========================================
+            echo [Retry] Online sync failed, retrying in offline mode...
             echo.
-            echo Please check the error messages above.
-            echo You may need to:
-            echo   1. Check your internet connection
-            echo   2. Ensure you have enough disk space
-            echo   3. Try running: uv sync manually
-            echo.
-            pause
-            exit /b 1
+            uv sync --offline
+
+            if !ERRORLEVEL! NEQ 0 (
+                echo.
+                echo ========================================
+                echo [Error] Failed to setup environment
+                echo ========================================
+                echo.
+                echo Both online and offline modes failed.
+                echo Please check:
+                echo   1. Your internet connection ^(required for first-time setup^)
+                echo   2. Ensure you have enough disk space
+                echo   3. Try running: uv sync manually
+                echo.
+                pause
+                exit /b 1
+            )
         )
 
         echo.
@@ -278,24 +296,158 @@ if exist "%~dp0python_embeded\python.exe" (
         echo.
     )
 
+    call :EnsureLegacyNvidiaTorchCompat
+    if !ERRORLEVEL! NEQ 0 exit /b !ERRORLEVEL!
+
     echo Starting ACE-Step Gradio UI...
     echo.
 
     REM Build command with optional parameters
-    set "CMD=uv run acestep --port %PORT% --server-name %SERVER_NAME% --language %LANGUAGE%"
-    if not "%SHARE%"=="" set "CMD=!CMD! %SHARE%"
-    if not "%CONFIG_PATH%"=="" set "CMD=!CMD! %CONFIG_PATH%"
-    if not "%LM_MODEL_PATH%"=="" set "CMD=!CMD! %LM_MODEL_PATH%"
-    if not "%OFFLOAD_TO_CPU%"=="" set "CMD=!CMD! %OFFLOAD_TO_CPU%"
-    if not "%DOWNLOAD_SOURCE%"=="" set "CMD=!CMD! %DOWNLOAD_SOURCE%"
-    if not "%INIT_SERVICE%"=="" set "CMD=!CMD! %INIT_SERVICE%"
-    if not "%ENABLE_API%"=="" set "CMD=!CMD! %ENABLE_API%"
-    if not "%API_KEY%"=="" set "CMD=!CMD! %API_KEY%"
-    if not "%AUTH_USERNAME%"=="" set "CMD=!CMD! %AUTH_USERNAME%"
-    if not "%AUTH_PASSWORD%"=="" set "CMD=!CMD! %AUTH_PASSWORD%"
+    set "ACESTEP_ARGS=acestep --port %PORT% --server-name %SERVER_NAME% --language %LANGUAGE%"
+    if not "%SHARE%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %SHARE%"
+    if not "%CONFIG_PATH%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %CONFIG_PATH%"
+    if not "%LM_MODEL_PATH%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %LM_MODEL_PATH%"
+    if not "%OFFLOAD_TO_CPU%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %OFFLOAD_TO_CPU%"
+    if not "%INIT_LLM%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %INIT_LLM%"
+    if not "%DOWNLOAD_SOURCE%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %DOWNLOAD_SOURCE%"
+    if not "%INIT_SERVICE%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %INIT_SERVICE%"
+    if not "%BATCH_SIZE%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %BATCH_SIZE%"
+    if not "%ENABLE_API%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %ENABLE_API%"
+    if not "%API_KEY%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %API_KEY%"
+    if not "%AUTH_USERNAME%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %AUTH_USERNAME%"
+    if not "%AUTH_PASSWORD%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %AUTH_PASSWORD%"
 
-    !CMD!
+    uv run !ACESTEP_ARGS!
+    if !ERRORLEVEL! NEQ 0 (
+        echo.
+        echo [Retry] Online dependency resolution failed, retrying in offline mode...
+        echo.
+        uv run --offline !ACESTEP_ARGS!
+        if !ERRORLEVEL! NEQ 0 (
+            echo.
+            echo ========================================
+            echo [Error] Failed to start ACE-Step
+            echo ========================================
+            echo.
+            echo Both online and offline modes failed.
+            echo Please check:
+            echo   1. Your internet connection ^(for first-time setup^)
+            echo   2. If dependencies were previously installed ^(offline mode requires a prior successful install^)
+            echo   3. Try running: uv sync --offline
+            echo.
+            pause
+            exit /b 1
+        )
+    )
 )
 
 pause
 endlocal
+goto :eof
+
+REM ==================== Helper Functions ====================
+
+:EnsureLegacyNvidiaTorchCompat
+REM Auto-fix PyTorch for legacy NVIDIA GPUs (e.g., Pascal sm_61 on Quadro P1000)
+if /i "%ACESTEP_SKIP_LEGACY_TORCH_FIX%"=="true" exit /b 0
+if not exist "%~dp0.venv\Scripts\python.exe" exit /b 0
+
+pushd "%~dp0"
+".venv\Scripts\python.exe" -c "import os,sys; sys.path.insert(0, os.getcwd()); from acestep.launcher_compat import legacy_torch_fix_probe_exit_code; raise SystemExit(legacy_torch_fix_probe_exit_code())" >nul 2>&1
+set "LEGACY_CHECK_EXIT=!ERRORLEVEL!"
+
+if "!LEGACY_CHECK_EXIT!"=="0" (
+    popd
+    exit /b 0
+)
+if not "!LEGACY_CHECK_EXIT!"=="42" (
+    echo [Compatibility] Error: legacy NVIDIA compatibility probe failed with exit code !LEGACY_CHECK_EXIT!.
+    popd
+    exit /b !LEGACY_CHECK_EXIT!
+)
+
+echo [Compatibility] Legacy NVIDIA GPU detected with unsupported torch arch.
+echo [Compatibility] Installing CUDA 12.1 torch build with sm_61 support...
+uv pip install --python .venv\Scripts\python.exe --force-reinstall --index-url https://download.pytorch.org/whl/cu121 torch==2.5.1+cu121 torchvision==0.20.1+cu121 torchaudio==2.5.1+cu121
+if !ERRORLEVEL! EQU 0 (
+    echo [Compatibility] Legacy torch install complete.
+    REM Keep a legacy-compatible torchao so INT8 quantization remains available
+    REM on low-VRAM Pascal/Quadro GPUs.
+    uv pip install --python .venv\Scripts\python.exe --force-reinstall torchao==0.11.0 >nul 2>&1
+    set "TORCHAO_INSTALL_EXIT=!ERRORLEVEL!"
+    if !TORCHAO_INSTALL_EXIT! EQU 0 (
+        echo [Compatibility] Installed torchao==0.11.0 (legacy-compatible).
+    ) else (
+        echo [Compatibility] Warning: failed to install torchao==0.11.0. Quantization may be unavailable.
+        set "LEGACY_HELPER_EXIT=!TORCHAO_INSTALL_EXIT!"
+        popd
+        exit /b !LEGACY_HELPER_EXIT!
+    )
+) else (
+    set "LEGACY_INSTALL_EXIT=!ERRORLEVEL!"
+    echo [Compatibility] Warning: automatic legacy torch install failed.
+    echo [Compatibility] Run manually:
+    echo   uv pip install --python .venv\Scripts\python.exe --force-reinstall --index-url https://download.pytorch.org/whl/cu121 torch==2.5.1+cu121 torchvision==0.20.1+cu121 torchaudio==2.5.1+cu121
+    set "LEGACY_HELPER_EXIT=!LEGACY_INSTALL_EXIT!"
+    popd
+    exit /b !LEGACY_HELPER_EXIT!
+)
+popd
+exit /b 0
+
+:LoadEnvFile
+REM Load environment variables from .env file if it exists
+set "ENV_FILE=%~dp0.env"
+if not exist "%ENV_FILE%" (
+    exit /b 0
+)
+
+echo [Config] Loading configuration from .env file...
+for /f "usebackq tokens=1,* delims==" %%a in ("%ENV_FILE%") do (
+    set "line=%%a"
+    set "value=%%b"
+    
+    REM Skip empty lines and comments
+    if not "!line!"=="" (
+        set "first_char=!line:~0,1!"
+        if not "!first_char!"=="#" (
+            REM Remove leading/trailing spaces from key
+            for /f "tokens=* delims= " %%x in ("!line!") do set "key=%%x"
+            
+            REM Map .env variable names to batch script variables
+            if /i "!key!"=="ACESTEP_CONFIG_PATH" (
+                if not "!value!"=="" set "CONFIG_PATH=--config_path !value!"
+            )
+            if /i "!key!"=="ACESTEP_LM_MODEL_PATH" (
+                if not "!value!"=="" set "LM_MODEL_PATH=--lm_model_path !value!"
+            )
+            if /i "!key!"=="ACESTEP_INIT_LLM" (
+                if not "!value!"=="" (
+                    if not "!value!"=="auto" set "INIT_LLM=--init_llm !value!"
+                )
+            )
+            if /i "!key!"=="ACESTEP_DOWNLOAD_SOURCE" (
+                if not "!value!"=="" (
+                    if not "!value!"=="auto" set "DOWNLOAD_SOURCE=--download-source !value!"
+                )
+            )
+            if /i "!key!"=="ACESTEP_API_KEY" (
+                if not "!value!"=="" set "API_KEY=--api-key !value!"
+            )
+            if /i "!key!"=="PORT" (
+                if not "!value!"=="" set "PORT=!value!"
+            )
+            if /i "!key!"=="SERVER_NAME" (
+                if not "!value!"=="" set "SERVER_NAME=!value!"
+            )
+            if /i "!key!"=="LANGUAGE" (
+                if not "!value!"=="" set "LANGUAGE=!value!"
+            )
+            if /i "!key!"=="ACESTEP_BATCH_SIZE" (
+                if not "!value!"=="" set "BATCH_SIZE=--batch_size !value!"
+            )
+        )
+    )
+)
+echo [Config] Configuration loaded from .env
+exit /b 0

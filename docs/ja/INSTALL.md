@@ -26,7 +26,7 @@
 
 | 項目 | 要件 |
 |------|------|
-| Python | 3.11+（安定版、プレリリース版は不可） |
+| Python | 3.11-3.12（安定版、プレリリース版は不可）<br>**注意：** Windows 上の ROCm は Python 3.12 が必要です |
 | GPU | CUDA GPU 推奨。MPS / ROCm / Intel XPU / CPU もサポート |
 | VRAM | DiTのみモード ≥4GB、LLM+DiT ≥6GB |
 | ディスク | コアモデルに約10GB |
@@ -282,7 +282,7 @@ merge_config.bat                    ./merge_config.sh
 Windows ユーザー向けに、依存関係がプリインストールされたポータブルパッケージを提供しています：
 
 1. ダウンロードして解凍：[ACE-Step-1.5.7z](https://files.acemusic.ai/acemusic/win/ACE-Step-1.5.7z)
-2. `python_embeded` に全依存関係がプリインストール済み
+2. `python_embedded` に全依存関係がプリインストール済み
 3. **要件：** CUDA 12.8
 
 ### クイックスタートスクリプト
@@ -468,7 +468,7 @@ ACESTEP_INIT_LLM=false
 | `--init_llm` | auto | LLM 初期化：`true` / `false` / 省略で自動 |
 | `--config_path` | auto | DiT モデル（例：`acestep-v15-turbo`） |
 | `--lm_model_path` | auto | LM モデル（例：`acestep-5Hz-lm-1.7B`） |
-| `--offload_to_cpu` | auto | CPU オフロード（VRAM < 16GB で自動有効化） |
+| `--offload_to_cpu` | auto | CPU オフロード（GPU ティアに基づいて自動設定） |
 | `--download-source` | auto | モデルソース：`auto` / `huggingface` / `modelscope` |
 | `--enable-api` | false | Gradio UI と同時に REST API エンドポイントを有効化 |
 
@@ -512,6 +512,17 @@ huggingface-cli download ACE-Step/acestep-5Hz-lm-0.6B --local-dir ./checkpoints/
 huggingface-cli download ACE-Step/acestep-5Hz-lm-4B --local-dir ./checkpoints/acestep-5Hz-lm-4B
 ```
 
+### 共有モデルディレクトリ
+
+複数の ACE-Step インストール（トレーナー、異なるバージョンなど）がある場合、モデルディレクトリを共有して重複ダウンロードを避け、ディスク容量を節約できます：
+
+```bash
+# シェルプロファイル（~/.bashrc、~/.zshrc など）に追加
+export ACESTEP_CHECKPOINTS_DIR=~/ace-step-models
+```
+
+すべてのインストールが同じモデルファイルを使用します。`.env` ファイルで設定することもできます。
+
 ### 利用可能なモデル
 
 | モデル | 説明 | HuggingFace |
@@ -529,16 +540,18 @@ huggingface-cli download ACE-Step/acestep-5Hz-lm-4B --local-dir ./checkpoints/ac
 
 ## 💡 どのモデルを選ぶべき？
 
-ACE-Step は GPU の VRAM に自動適応します：
+ACE-Step は GPU の VRAM に自動適応します。UI は検出された GPU ティアに基づいてすべての設定（LM モデル、バックエンド、オフロード、量子化）を事前構成します：
 
-| GPU VRAM | 推奨 LM モデル | 備考 |
-|----------|---------------|------|
-| **≤6GB** | なし（DiTのみ） | メモリ節約のため LM はデフォルトで無効 |
-| **6-12GB** | `acestep-5Hz-lm-0.6B` | 軽量、バランスが良い |
-| **12-16GB** | `acestep-5Hz-lm-1.7B` | より高品質 |
-| **≥16GB** | `acestep-5Hz-lm-4B` | 最高品質と音声理解能力 |
+| GPU VRAM | 推奨 DiT | 推奨 LM モデル | バックエンド | 備考 |
+|----------|---------|---------------|-------------|------|
+| **≤6GB** | 2B turbo | なし（DiTのみ） | — | LM はデフォルトで無効；INT8 量子化 + 完全 CPU オフロード |
+| **6-8GB** | 2B turbo | `acestep-5Hz-lm-0.6B` | `pt` | 軽量 LM、PyTorch バックエンド |
+| **8-16GB** | 2B turbo/sft | `0.6B` / `1.7B` | `vllm` | 8-12GB は 0.6B、12-16GB は 1.7B |
+| **16-20GB** | 2B sft または XL turbo | `acestep-5Hz-lm-1.7B` | `vllm` | XL は 20GB 未満で CPU オフロードが必要 |
+| **20-24GB** | XL turbo/sft | `acestep-5Hz-lm-1.7B` | `vllm` | XL はオフロード不要；4B LM 利用可能 |
+| **≥24GB** | XL sft（extract/lego/complete には xl-base） | `acestep-5Hz-lm-4B` | `vllm` | 最高品質、すべてのモデルがオフロードなしで動作 |
 
-> 📖 GPU 互換性の詳細（時間制限、バッチサイズ、メモリ最適化）は [GPU 互換性ガイド](GPU_COMPATIBILITY.md) を参照してください。
+> 📖 GPU 互換性の詳細（ティアテーブル、時間制限、バッチサイズ、アダプティブ UI デフォルト、メモリ最適化）は [GPU 互換性ガイド](GPU_COMPATIBILITY.md) を参照してください。
 
 ---
 

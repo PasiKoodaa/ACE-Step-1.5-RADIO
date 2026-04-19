@@ -46,20 +46,33 @@ Simply open `RADIO.html` in your browser.
 <h1 align="center">ACE-Step 1.5</h1>
 <h1 align="center">Pushing the Boundaries of Open-Source Music Generation</h1>
 <p align="center">
+    <a href="https://acemusic.ai">ACEMusic</a> |
     <a href="https://ace-step.github.io/ace-step-v1.5.github.io/">Project</a> |
     <a href="https://huggingface.co/ACE-Step/Ace-Step1.5">Hugging Face</a> |
     <a href="https://modelscope.cn/models/ACE-Step/Ace-Step1.5">ModelScope</a> |
     <a href="https://huggingface.co/spaces/ACE-Step/Ace-Step-v1.5">Space Demo</a> |
     <a href="https://discord.gg/PeWDxrkdj7">Discord</a> |
-    <a href="https://arxiv.org/abs/2602.00744">Technical Report</a>
+    <a href="https://arxiv.org/abs/2602.00744">Technical Report</a> |
+    <a href="https://github.com/ace-step/awesome-ace-step">Awesome ACE-Step</a>
 </p>
 
 <p align="center">
-    <img src="./assets/orgnization_logos.png" width="100%" alt="StepFun Logo">
+    <img src="./assets/organization_logos.png" height="80" alt="StepFun Logo" style="vertical-align: middle;">
+    &nbsp;&nbsp;
+    <a href="https://acemusic.ai">
+        <img src="./assets/acemusic-logo.svg" height="57" alt="ACEMusic - Try ACE-Step Online" style="vertical-align: middle; position: relative; top: 2px;">
+    </a>
 </p>
+
+## 📰 News
+
+> 🎵 **Want a faster & more stable experience? Try [acemusic.ai](https://acemusic.ai) — 100% free!**
+
+- **[2026-04-02] 🎉 ACE-Step 1.5 XL (4B DiT) Released!** — We introduce the XL series with a 4B-parameter DiT decoder for higher audio quality. Three variants available: [xl-base](https://huggingface.co/ACE-Step/acestep-v15-xl-base), [xl-sft](https://huggingface.co/ACE-Step/acestep-v15-xl-sft), [xl-turbo](https://huggingface.co/ACE-Step/acestep-v15-xl-turbo). Requires ≥12GB VRAM (with offload), ≥20GB recommended. All LM models fully compatible. See [Model Zoo](#-model-zoo) for details.
 
 ## Table of Contents
 
+- [📰 News](#-news)
 - [✨ Features](#-features)
 - [⚡ Quick Start](#-quick-start)
 - [🚀 Launch Scripts](#-launch-scripts)
@@ -111,14 +124,27 @@ Simply open `RADIO.html` in your browser.
 | ✅ LoRA Training | One-click annotation & training in Gradio. 8 songs, 1 hour on 3090 (12GB VRAM) |
 | ✅ Quality Scoring | Automatic quality assessment for generated audio |
 
-## Staying ahead
------------------
+## 🔔 Staying ahead
 Star ACE-Step on GitHub and be instantly notified of new releases
 ![](assets/star.gif)
 
+## 🤝 Partners
+
+<p align="center">
+    <a href="https://www.comfy.org/"><img src="https://registry.comfy.org/_next/static/media/logo_blue.9ac227d3.png" alt="ComfyUI" height="40" style="margin: 5px;"></a>
+    <a href="https://zilliz.com/"><img src="https://avatars.githubusercontent.com/u/18416694" alt="Zilliz" height="40" style="margin: 5px;"></a>
+    <a href="https://milvus.io/"><img src="https://miro.medium.com/v2/resize:fit:2400/1*-VEGyAgcIBD62XtZWavy8w.png" alt="Milvus" height="40" style="margin: 5px;"></a>
+    <a href="https://zeabur.com/"><img src="https://zeabur.notion.site/image/attachment%3A43bc244b-9a2d-4b96-9646-8392aa6fc862%3Alogo-dark_1.svg?table=block&id=318a221c-948e-8056-b3c0-f9c39ce543ba&spaceId=ba37aeb9-0937-401d-aa41-ce1d3b6ff778&userId=&cache=v2" alt="Zeabur" height="40" width="40" style="margin: 5px;"></a>
+    <a href="https://majiks.studio"><img src="https://raw.githubusercontent.com/Majiks-Studio/majiks-brand-kit/main/logos/app-icon/png/app-icon-128.png" alt="Majik's Music Studio" height="40" width="40" style="margin: 5px;"></a>
+</p>
+
 ## ⚡ Quick Start
 
-> **Requirements:** Python 3.11+, CUDA GPU recommended (also supports MPS / ROCm / Intel XPU / CPU)
+> 🎵 **Don't want to install locally? Try [acemusic.ai](https://acemusic.ai) — 100% free, no GPU required!**
+
+> **Requirements:** Python 3.11-3.12, CUDA GPU recommended (also supports MPS / ROCm / Intel XPU / CPU)
+> 
+> **Note:** ROCm on Windows requires Python 3.12 (AMD officially provides Python 3.12 wheels only)
 
 ```bash
 # 1. Install uv
@@ -141,18 +167,26 @@ Open http://localhost:7860 (Gradio) or http://localhost:8001 (API).
 
 > 📦 **Windows users:** A [portable package](https://files.acemusic.ai/acemusic/win/ACE-Step-1.5.7z) with pre-installed dependencies is available. See [Installation Guide](./docs/en/INSTALL.md#-windows-portable-package).
 
+> 📦 **MacOS users:** A [portable package](https://files.acemusic.ai/acemusic/mac/ACE-Step-1.5.zip) with pre-installed dependencies is available. See [Installation Guide](./docs/en/INSTALL.md#-macos-portable-package).
+
 > 📖 **Full installation guide** (AMD/ROCm, Intel GPU, CPU, environment variables, command-line options): [English](./docs/en/INSTALL.md) | [中文](./docs/zh/INSTALL.md) | [日本語](./docs/ja/INSTALL.md)
 
 ### 💡 Which Model Should I Choose?
 
-| Your GPU VRAM | Recommended LM Model | Notes |
-|---------------|---------------------|-------|
-| **≤6GB** | None (DiT only) | LM disabled by default to save memory |
-| **6-12GB** | `acestep-5Hz-lm-0.6B` | Lightweight, good balance |
-| **12-16GB** | `acestep-5Hz-lm-1.7B` | Better quality |
-| **≥16GB** | `acestep-5Hz-lm-4B` | Best quality and audio understanding |
+| Your GPU VRAM | Recommended DiT | Recommended LM Model | Backend | Notes |
+|---------------|----------------|---------------------|---------|-------|
+| **≤6GB** | 2B turbo | None (DiT only) | — | LM disabled by default; INT8 quantization + full CPU offload |
+| **6-8GB** | 2B turbo | `acestep-5Hz-lm-0.6B` | `pt` | Lightweight LM with PyTorch backend |
+| **8-16GB** | 2B turbo/sft | `acestep-5Hz-lm-0.6B` / `1.7B` | `vllm` | 0.6B for 8-12GB, 1.7B for 12-16GB |
+| **16-20GB** | 2B sft or XL turbo | `acestep-5Hz-lm-1.7B` | `vllm` | XL requires CPU offload below 20GB |
+| **20-24GB** | XL turbo/sft | `acestep-5Hz-lm-1.7B` | `vllm` | XL fits without offload; 4B LM available |
+| **≥24GB** | XL sft (or xl-base for extract/lego/complete) | `acestep-5Hz-lm-4B` | `vllm` | Best quality, all models fit without offload |
 
-> 📖 GPU compatibility details: [English](./docs/en/GPU_COMPATIBILITY.md) | [中文](./docs/zh/GPU_COMPATIBILITY.md) | [日本語](./docs/ja/GPU_COMPATIBILITY.md)
+> **XL (4B) models** (`acestep-v15-xl-*`) offer higher audio quality with ~9GB VRAM for weights (vs ~4.7GB for 2B). They require ≥12GB VRAM (with offload + quantization) or ≥20GB (without offload). All LM models are fully compatible with XL.
+
+The UI automatically selects the best configuration for your GPU. All settings (LM model, backend, offloading, quantization) are tier-aware and pre-configured.
+
+> 📖 GPU compatibility details: [English](./docs/en/GPU_COMPATIBILITY.md) | [中文](./docs/zh/GPU_COMPATIBILITY.md) | [日本語](./docs/ja/GPU_COMPATIBILITY.md) | [한국어](./docs/ko/GPU_COMPATIBILITY.md)
 
 ## 🚀 Launch Scripts
 
@@ -176,6 +210,22 @@ chmod +x start_gradio_ui.sh && ./start_gradio_ui.sh
 chmod +x start_gradio_ui_macos.sh && ./start_gradio_ui_macos.sh
 ```
 
+### ⚙️ Customizing Launch Settings
+
+**Recommended:** Create a `.env` file to customize models, ports, and other settings. Your `.env` configuration will survive repository updates.
+
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit with your preferred settings
+# Examples in .env:
+ACESTEP_CONFIG_PATH=acestep-v15-turbo
+ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-1.7B
+PORT=7860
+LANGUAGE=en
+```
+
 > 📖 **Script configuration & customization:** [English](./docs/en/INSTALL.md#-launch-scripts) | [中文](./docs/zh/INSTALL.md#-启动脚本) | [日本語](./docs/ja/INSTALL.md#-起動スクリプト)
 
 ## 📚 Documentation
@@ -186,6 +236,7 @@ chmod +x start_gradio_ui_macos.sh && ./start_gradio_ui_macos.sh
 |--------|-------------|---------------|
 | 🖥️ **Gradio Web UI** | Interactive web interface for music generation | [Guide](./docs/en/GRADIO_GUIDE.md) |
 | 🎚️ **Studio UI** | Optional HTML frontend (DAW-like) | [Guide](./docs/en/studio.md) |
+| 🎛️ **VST3 Plugin** | Standalone VST3 plugin (C++/GGML) for DAW integration | [acestep.vst3](https://github.com/ace-step/acestep.vst3) |
 | 🐍 **Python API** | Programmatic access for integration | [Guide](./docs/en/INFERENCE.md) |
 | 🌐 **REST API** | HTTP-based async API for services | [Guide](./docs/en/API.md) |
 | ⌨️ **CLI** | Interactive wizard and configuration | [Guide](./docs/en/CLI.md) |
@@ -201,12 +252,12 @@ chmod +x start_gradio_ui_macos.sh && ./start_gradio_ui_macos.sh
 
 ### Multi-Language Docs
 
-| Language | API | Gradio | Inference | Tutorial | Install | Benchmark |
-|----------|-----|--------|-----------|----------|---------|-----------|
-| 🇺🇸 English | [Link](./docs/en/API.md) | [Link](./docs/en/GRADIO_GUIDE.md) | [Link](./docs/en/INFERENCE.md) | [Link](./docs/en/Tutorial.md) | [Link](./docs/en/INSTALL.md) | [Link](./docs/en/BENCHMARK.md) |
-| 🇨🇳 中文 | [Link](./docs/zh/API.md) | [Link](./docs/zh/GRADIO_GUIDE.md) | [Link](./docs/zh/INFERENCE.md) | [Link](./docs/zh/Tutorial.md) | [Link](./docs/zh/INSTALL.md) | [Link](./docs/zh/BENCHMARK.md) |
-| 🇯🇵 日本語 | [Link](./docs/ja/API.md) | [Link](./docs/ja/GRADIO_GUIDE.md) | [Link](./docs/ja/INFERENCE.md) | [Link](./docs/ja/Tutorial.md) | [Link](./docs/ja/INSTALL.md) | — |
-| 🇰🇷 한국어 | [Link](./docs/ko/API.md) | [Link](./docs/ko/GRADIO_GUIDE.md) | [Link](./docs/ko/INFERENCE.md) | [Link](./docs/ko/Tutorial.md) | — | — |
+| Language | API | Gradio | Inference | Tutorial | LoRA Training | Install | Benchmark |
+|----------|-----|--------|-----------|----------|---------------|---------|-----------|
+| 🇺🇸 English | [Link](./docs/en/API.md) | [Link](./docs/en/GRADIO_GUIDE.md) | [Link](./docs/en/INFERENCE.md) | [Link](./docs/en/Tutorial.md) | [Link](./docs/en/LoRA_Training_Tutorial.md) | [Link](./docs/en/INSTALL.md) | [Link](./docs/en/BENCHMARK.md) |
+| 🇨🇳 中文 | [Link](./docs/zh/API.md) | [Link](./docs/zh/GRADIO_GUIDE.md) | [Link](./docs/zh/INFERENCE.md) | [Link](./docs/zh/Tutorial.md) | [Link](./docs/zh/LoRA_Training_Tutorial.md) | [Link](./docs/zh/INSTALL.md) | [Link](./docs/zh/BENCHMARK.md) |
+| 🇯🇵 日本語 | [Link](./docs/ja/API.md) | [Link](./docs/ja/GRADIO_GUIDE.md) | [Link](./docs/ja/INFERENCE.md) | [Link](./docs/ja/Tutorial.md) | [Link](./docs/ja/LoRA_Training_Tutorial.md) | [Link](./docs/ja/INSTALL.md) | — |
+| 🇰🇷 한국어 | [Link](./docs/ko/API.md) | [Link](./docs/ko/GRADIO_GUIDE.md) | [Link](./docs/ko/INFERENCE.md) | [Link](./docs/ko/Tutorial.md) | [Link](./docs/ko/LoRA_Training_Tutorial.md) | — | — |
 
 ## 📖 Tutorial
 
@@ -222,7 +273,18 @@ This tutorial covers: mental models and design philosophy, model architecture an
 
 ## 🔨 Train
 
-See the **LoRA Training** tab in Gradio UI for one-click training, or check [Gradio Guide - LoRA Training](./docs/en/GRADIO_GUIDE.md#lora-training) for details.
+📖 **LoRA Training Tutorial** — step-by-step guide covering data preparation, annotation, preprocessing, and training:
+
+| Language | Link |
+|----------|------|
+| 🇺🇸 English | [LoRA Training Tutorial](./docs/en/LoRA_Training_Tutorial.md) |
+| 🇨🇳 中文 | [LoRA 训练教程](./docs/zh/LoRA_Training_Tutorial.md) |
+| 🇯🇵 日本語 | [LoRA トレーニングチュートリアル](./docs/ja/LoRA_Training_Tutorial.md) |
+| 🇰🇷 한국어 | [LoRA 학습 튜토리얼](./docs/ko/LoRA_Training_Tutorial.md) |
+
+See also the **LoRA Training** tab in Gradio UI for one-click training, or [Gradio Guide - LoRA Training](./docs/en/GRADIO_GUIDE.md#lora-training) for UI reference.
+
+🔧 **Advanced Training with [Side-Step](https://github.com/koda-dernet/Side-Step)** — CLI-based training toolkit with corrected timestep sampling, LoKR adapters, VRAM optimization, gradient sensitivity analysis, and more. See the [Side-Step documentation](./docs/sidestep/Getting%20Started.md).
 
 ## 🏗️ Architecture
 
@@ -243,7 +305,16 @@ See the **LoRA Training** tab in Gradio UI for one-click training, or check [Gra
 | `acestep-v15-base` | ✅ | ❌ | ❌ | ✅ | 50 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Medium | High | Easy | [Link](https://huggingface.co/ACE-Step/acestep-v15-base) |
 | `acestep-v15-sft` | ✅ | ✅ | ❌ | ✅ | 50 | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | High | Medium | Easy | [Link](https://huggingface.co/ACE-Step/acestep-v15-sft) |
 | `acestep-v15-turbo` | ✅ | ✅ | ❌ | ❌ | 8 | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | Very High | Medium | Medium | [Link](https://huggingface.co/ACE-Step/Ace-Step1.5) |
-| `acestep-v15-turbo-rl` | ✅ | ✅ | ✅ | ❌ | 8 | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | Very High | Medium | Medium | To be released |
+
+### XL (4B) DiT Models
+
+> XL models use a larger 4B-parameter DiT decoder (~9GB bf16) for higher audio quality. They require ≥12GB VRAM (with offload + quantization) or ≥20GB (without offload). All LM models are fully compatible.
+
+| DiT Model | Pre-Training | SFT | RL | CFG | Step | Refer audio | Text2Music | Cover | Repaint | Extract | Lego | Complete | Quality | Diversity | Fine-Tunability | Hugging Face |
+|-----------|:------------:|:---:|:--:|:---:|:----:|:-----------:|:----------:|:-----:|:-------:|:-------:|:----:|:--------:|:-------:|:---------:|:---------------:|--------------|
+| `acestep-v15-xl-base` | ✅ | ❌ | ❌ | ✅ | 50 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | High | High | Easy | [Link](https://huggingface.co/ACE-Step/acestep-v15-xl-base) |
+| `acestep-v15-xl-sft` | ✅ | ✅ | ❌ | ✅ | 50 | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | Very High | Medium | Easy | [Link](https://huggingface.co/ACE-Step/acestep-v15-xl-sft) |
+| `acestep-v15-xl-turbo` | ✅ | ✅ | ❌ | ❌ | 8 | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | Very High | Medium | Medium | [Link](https://huggingface.co/ACE-Step/acestep-v15-xl-turbo) |
 
 ### LM Models
 
@@ -276,6 +347,10 @@ The only official website for the ACE-Step project is our GitHub Pages site.
 🚫 Fake domains include but are not limited to:
 ac\*\*p.com, a\*\*p.org, a\*\*\*c.org  
 ⚠️ Please be cautious. Do not visit, trust, or make payments on any of those sites.
+
+## 🌐 Community & Ecosystem
+
+Check out **[Awesome ACE-Step](https://github.com/ace-step/awesome-ace-step)** — a curated list of community projects, alternative UIs, ComfyUI nodes, cloud deployments, training tools, and more built around ACE-Step.
 
 ## 🙏 Acknowledgements
 

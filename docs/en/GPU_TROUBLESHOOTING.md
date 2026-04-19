@@ -141,7 +141,37 @@ pip install torch --index-url https://download.pytorch.org/whl/cu121
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
    ```
 
-### Issue 4: WSL2 GPU Access Issues
+### Issue 4: vLLM Errors or Crashes on Older NVIDIA GPUs
+
+**Symptoms:**
+- You have a pre-Volta NVIDIA GPU (GTX 1080, GTX 1080 Ti, TITAN Xp, Tesla P100, or older)
+- vLLM / Triton errors appear in the log
+- LM inference crashes or produces garbage output
+
+**Explanation:**
+
+ACE-Step automatically detects GPUs with CUDA compute capability < 7.0 and forces the PyTorch (`pt`) backend for the Language Model. If you see vLLM-related errors on these GPUs, the automatic detection may not have triggered (e.g., when using `--backend vllm` explicitly).
+
+**Solution:**
+
+1. **Let the auto-detection handle it** -- do not pass `--backend vllm` on legacy hardware. The system will select `pt` automatically.
+2. **Force the PyTorch backend explicitly** if needed:
+   ```bash
+   # Via command-line flag
+   uv run acestep --backend pt
+
+   # Or via environment variable
+   ACESTEP_LM_BACKEND=pt uv run acestep
+   ```
+3. **Verify your GPU's compute capability:**
+   ```bash
+   python -c "import torch; print(torch.cuda.get_device_capability())"
+   ```
+   If the first number is less than 7 (e.g., `(6, 1)` for Pascal), your GPU is in the legacy category.
+
+The PyTorch backend is fully functional but may be slightly slower for LM inference compared to vLLM on newer GPUs.
+
+### Issue 5: WSL2 GPU Access Issues
 
 **Symptoms:**
 - Running in WSL2 (Windows Subsystem for Linux)
@@ -229,4 +259,52 @@ If none of the above solutions work:
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
-| `MAX_CUDA_VRAM` | Override detected VRAM (testing) | `8` (simulate 8GB GPU) |
+| `MAX_CUDA_VRAM` | Override detected VRAM for tier simulation (also enforces hard VRAM cap via `set_per_process_memory_fraction`) | `8` (simulate 8GB GPU) |
+| `ACESTEP_VAE_ON_CPU` | Force VAE decode on CPU to save VRAM | `1` (enable) |
+
+> **Note on `MAX_CUDA_VRAM`**: When set, this variable not only changes the tier detection logic but also calls `torch.cuda.set_per_process_memory_fraction()` to enforce a hard VRAM limit. This means OOM errors during simulation are realistic and reflect actual behavior on GPUs with that amount of VRAM. See [GPU_COMPATIBILITY.md](GPU_COMPATIBILITY.md) for the full tier table.
+
+## LoRA Memory Issues (FIXED)
+
+### Issue: High VRAM Usage with LoRA (25-30GB)
+
+**Symptoms:**
+- Cannot use LoRA on 24GB VRAM GPUs (e.g., RTX 4090)
+- VRAM usage spikes to 25-30GB when loading LoRA
+- Out of memory errors during LoRA inference
+
+**Status:** ✅ **FIXED** (as of commit 731fabd)
+
+**Solution:**
+
+This issue was caused by inefficient memory management in the LoRA lifecycle code. The fix replaces memory-heavy `deepcopy` operations with efficient `state_dict` backups stored on CPU.
+
+**Memory Usage:**
+- **Before fix**: 24-33GB VRAM (exceeds 24GB cards)
+- **After fix**: 14-18GB VRAM (fits on 24GB cards)
+- **Savings**: ~10-15GB VRAM per LoRA operation
+
+**What Changed:**
+- LoRA base model backup now stored on CPU (not GPU)
+- Uses `state_dict` (weights only) instead of `deepcopy` (full model)
+- Added memory diagnostics logging
+
+**Verify the Fix:**
+
+Run the validation script to confirm:
+```bash
+python scripts/validate_lora_memory.py
+```
+
+Expected output:
+```
+✓ No deepcopy found in load_lora/unload_lora
+✓ Using state_dict backup (memory-efficient)
+✓ Backing up to CPU (saves VRAM)
+✓ Memory diagnostics enabled
+```
+
+**Additional Information:**
+- Technical details: `docs/lora_memory_optimization.md`
+- Full fix summary: `docs/FIX_SUMMARY.md`
+- Unit tests: `tests/test_lora_lifecycle_memory.py`

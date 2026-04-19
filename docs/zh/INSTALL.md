@@ -26,7 +26,7 @@
 
 | 项目 | 要求 |
 |------|------|
-| Python | 3.11+（正式版，非预发布版） |
+| Python | 3.11-3.12（正式版，非预发布版）<br>**注意：** Windows 上的 ROCm 需要 Python 3.12 |
 | GPU | 推荐 CUDA GPU；也支持 MPS / ROCm / Intel XPU / CPU |
 | 显存 | 仅 DiT 模式 ≥4GB；LLM+DiT ≥6GB |
 | 磁盘 | 核心模型约 10GB |
@@ -282,7 +282,7 @@ merge_config.bat                    ./merge_config.sh
 为 Windows 用户提供了预装依赖的便携包：
 
 1. 下载并解压：[ACE-Step-1.5.7z](https://files.acemusic.ai/acemusic/win/ACE-Step-1.5.7z)
-2. 包含 `python_embeded`，所有依赖已预装
+2. 包含 `python_embedded`，所有依赖已预装
 3. **要求：** CUDA 12.8
 
 ### 快速启动脚本
@@ -468,7 +468,7 @@ ACESTEP_INIT_LLM=false
 | `--init_llm` | auto | LLM 初始化：`true` / `false` / 省略为自动 |
 | `--config_path` | auto | DiT 模型（如 `acestep-v15-turbo`） |
 | `--lm_model_path` | auto | LM 模型（如 `acestep-5Hz-lm-1.7B`） |
-| `--offload_to_cpu` | auto | CPU 卸载（显存 < 16GB 时自动启用） |
+| `--offload_to_cpu` | auto | CPU 卸载（显存 < 20GB 时自动启用） |
 | `--download-source` | auto | 模型源：`auto` / `huggingface` / `modelscope` |
 | `--enable-api` | false | 同时启用 REST API 端点 |
 
@@ -512,6 +512,17 @@ huggingface-cli download ACE-Step/acestep-5Hz-lm-0.6B --local-dir ./checkpoints/
 huggingface-cli download ACE-Step/acestep-5Hz-lm-4B --local-dir ./checkpoints/acestep-5Hz-lm-4B
 ```
 
+### 共享模型目录
+
+如果你有多个 ACE-Step 安装（例如训练器、不同版本），可以共享同一个模型目录以避免重复下载、节省磁盘空间：
+
+```bash
+# 添加到 shell 配置文件（~/.bashrc、~/.zshrc 等）
+export ACESTEP_CHECKPOINTS_DIR=~/ace-step-models
+```
+
+所有安装将使用相同的模型文件。也可以在 `.env` 文件中设置。
+
 ### 可用模型
 
 | 模型 | 说明 | HuggingFace |
@@ -529,16 +540,18 @@ huggingface-cli download ACE-Step/acestep-5Hz-lm-4B --local-dir ./checkpoints/ac
 
 ## 💡 如何选择模型？
 
-ACE-Step 会自动适配你的 GPU 显存：
+ACE-Step 会自动适配你的 GPU 显存。UI 会根据检测到的 GPU 等级预配置所有设置（LM 模型、后端、卸载、量化）：
 
-| GPU 显存 | 推荐 LM 模型 | 说明 |
-|----------|--------------|------|
-| **≤6GB** | 无（仅 DiT） | 默认禁用 LM 以节省显存 |
-| **6-12GB** | `acestep-5Hz-lm-0.6B` | 轻量，平衡性好 |
-| **12-16GB** | `acestep-5Hz-lm-1.7B` | 更好的质量 |
-| **≥16GB** | `acestep-5Hz-lm-4B` | 最佳质量和音频理解能力 |
+| GPU 显存 | 推荐 DiT | 推荐 LM 模型 | 后端 | 说明 |
+|----------|---------|--------------|------|------|
+| **≤6GB** | 2B turbo | 无（仅 DiT） | — | 默认禁用 LM；INT8 量化 + 完全 CPU 卸载 |
+| **6-8GB** | 2B turbo | `acestep-5Hz-lm-0.6B` | `pt` | 轻量 LM，PyTorch 后端 |
+| **8-16GB** | 2B turbo/sft | `0.6B` / `1.7B` | `vllm` | 8-12GB 用 0.6B，12-16GB 用 1.7B |
+| **16-20GB** | 2B sft 或 XL turbo | `acestep-5Hz-lm-1.7B` | `vllm` | XL 在 20GB 以下需要 CPU 卸载 |
+| **20-24GB** | XL turbo/sft | `acestep-5Hz-lm-1.7B` | `vllm` | XL 无需卸载；可用 4B LM |
+| **≥24GB** | XL sft（或 xl-base 用于 extract/lego/complete） | `acestep-5Hz-lm-4B` | `vllm` | 最佳质量，所有模型无需卸载 |
 
-> 📖 详细 GPU 兼容性信息（时长限制、批量大小、内存优化），请参阅 [GPU 兼容性指南](GPU_COMPATIBILITY.md)。
+> 📖 详细 GPU 兼容性信息（等级表、时长限制、批量大小、自适应 UI 默认设置、显存优化），请参阅 [GPU 兼容性指南](GPU_COMPATIBILITY.md)。
 
 ---
 

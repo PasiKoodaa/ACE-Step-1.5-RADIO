@@ -78,9 +78,9 @@ API 키가 설정되지 않은 경우 인증이 필요하지 않습니다.
 | `time_signature` | string | `null` | 박자 (예: `"4/4"`) |
 
 > **messages 텍스트의 의미는 모드에 따라 다릅니다:**
-> - `lyrics` 설정 시 → messages 텍스트 = prompt (음악 설명)
+> - `lyrics` 설정 시 → messages 텍스트 = caption
 > - `sample_mode: true` 설정 시 → messages 텍스트 = sample_query (LLM에게 모든 것을 생성하도록 함)
-> - 둘 다 미설정 → 자동 감지: 태그가 있으면 태그 모드, 가사처럼 보이면 가사 모드, 그 외 sample 모드
+> - 둘 다 미설정 → 자동 감지: 태그가 있으면 태그 모드, 가사처럼 보이면 가사 모드, 그 외 caption 로 직접 생성에 사용
 
 #### messages 형식
 
@@ -127,7 +127,7 @@ API 키가 설정되지 않은 경우 인증이 필요하지 않습니다.
   "id": "chatcmpl-a1b2c3d4e5f6g7h8",
   "object": "chat.completion",
   "created": 1706688000,
-  "model": "acestep/acestep-v15-turbo",
+  "model": "acemusic/acestep-v15-turbo",
   "choices": [
     {
       "index": 0,
@@ -201,18 +201,17 @@ audio.play();
 
 ```json
 {
-  "object": "list",
   "data": [
     {
-      "id": "acestep/acestep-v15-turbo",
-      "name": "ACE-Step acestep-v15-turbo",
+      "id": "acemusic/acestep-v15-turbo",
+      "name": "ACE-Step",
       "created": 1706688000,
+      "description": "High-performance text-to-music generation model. Supports multiple styles, lyrics input, and various audio durations.",
       "input_modalities": ["text", "audio"],
       "output_modalities": ["audio", "text"],
       "context_length": 4096,
-      "max_output_length": 300,
       "pricing": {"prompt": "0", "completion": "0", "request": "0"},
-      "description": "AI music generation model"
+      "supported_sampling_parameters": ["temperature", "top_p"]
     }
   ]
 }
@@ -417,7 +416,7 @@ audio.play();
 각 이벤트는 `data: `로 시작하고 JSON이 뒤따르며 이중 줄바꿈 `\n\n`으로 끝납니다:
 
 ```
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1706688000,"model":"acestep/acestep-v15-turbo","choices":[{"index":0,"delta":{...},"finish_reason":null}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{...},"finish_reason":null}]}
 
 ```
 
@@ -425,9 +424,9 @@ data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1706688000
 
 | 단계 | delta 내용 | 설명 |
 |---|---|---|
-| 1. 초기화 | `{"role":"assistant","content":"Generating music"}` | 연결 수립 |
-| 2. 하트비트 | `{"content":"."}` | 생성 중 2초마다 전송, 연결 유지 |
-| 3. LM 콘텐츠 | `{"content":"## Metadata\n..."}` | 생성 완료 후 metadata와 lyrics 전송 |
+| 1. 초기화 | `{"role":"assistant","content":""}` | 연결 수립 |
+| 2. LM 콘텐츠 | `{"content":"\n\n## Metadata\n..."}` | LM 사용 시 metadata와 lyrics 전송 |
+| 3. 하트비트 | `{"content":"."}` | 오디오 생성 중 2초마다 전송, 연결 유지 |
 | 4. 오디오 데이터 | `{"audio":[{"type":"audio_url","audio_url":{"url":"data:..."}}]}` | 오디오 base64 데이터 |
 | 5. 완료 | `finish_reason: "stop"` | 생성 완료 |
 | 6. 종료 | `data: [DONE]` | 스트림 종료 마커 |
@@ -435,15 +434,15 @@ data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1706688000
 ### 스트리밍 응답 예시
 
 ```
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v1.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v1.5-turbo","choices":[{"index":0,"delta":{"content":"\n\n## Metadata\n**Caption:** Upbeat pop\n**BPM:** 120"},"finish_reason":null}]}
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{"content":"\n\n## Metadata\n**Caption:** Upbeat pop\n**BPM:** 120"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v1.5-turbo","choices":[{"index":0,"delta":{"content":"."},"finish_reason":null}]}
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{"content":"."},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v1.5-turbo","choices":[{"index":0,"delta":{"audio":[{"type":"audio_url","audio_url":{"url":"data:audio/mpeg;base64,..."}}]},"finish_reason":null}]}
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{"audio":[{"type":"audio_url","audio_url":{"url":"data:audio/mpeg;base64,..."}}]},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v1.5-turbo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 

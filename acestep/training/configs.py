@@ -5,7 +5,7 @@ Contains dataclasses for LoRA and training configurations.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 
 @dataclass
@@ -35,6 +35,43 @@ class LoRAConfig:
             "lora_dropout": self.dropout,
             "target_modules": self.target_modules,
             "bias": self.bias,
+        }
+
+
+@dataclass
+class LoKRConfig:
+    """Configuration for LoKr (Low-Rank Kronecker) training."""
+
+    linear_dim: int = 64
+    linear_alpha: int = 128
+    factor: int = -1
+    decompose_both: bool = False
+    use_tucker: bool = False
+    use_scalar: bool = False
+    weight_decompose: bool = False
+    target_modules: List[str] = field(default_factory=lambda: [
+        "q_proj", "k_proj", "v_proj", "o_proj"
+    ])
+    full_matrix: bool = False
+    bypass_mode: bool = False
+    rs_lora: bool = False
+    unbalanced_factorization: bool = False
+
+    def to_dict(self):
+        """Convert to dictionary for LyCORIS config."""
+        return {
+            "linear_dim": self.linear_dim,
+            "linear_alpha": self.linear_alpha,
+            "factor": self.factor,
+            "decompose_both": self.decompose_both,
+            "use_tucker": self.use_tucker,
+            "use_scalar": self.use_scalar,
+            "weight_decompose": self.weight_decompose,
+            "target_modules": self.target_modules,
+            "full_matrix": self.full_matrix,
+            "bypass_mode": self.bypass_mode,
+            "rs_lora": self.rs_lora,
+            "unbalanced_factorization": self.unbalanced_factorization,
         }
 
 
@@ -75,6 +112,8 @@ class TrainingConfig:
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     mixed_precision: str = "bf16"
+    use_fp8: bool = False
+    gradient_checkpointing: bool = False
     seed: int = 42
     output_dir: str = "./lora_output"
     
@@ -83,11 +122,18 @@ class TrainingConfig:
     pin_memory: bool = True
     prefetch_factor: int = 2
     persistent_workers: bool = True
-    pin_memory_device: Optional[str] = None
+    pin_memory_device: str = ""
     
     # Logging
     log_every_n_steps: int = 10
-    
+
+    # Validation (for loss curve and best-checkpoint tracking)
+    val_split: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.val_split < 1.0:
+            raise ValueError("val_split must be in [0.0, 1.0).")
+
     def to_dict(self):
         """Convert to dictionary."""
         return {
@@ -102,6 +148,8 @@ class TrainingConfig:
             "weight_decay": self.weight_decay,
             "max_grad_norm": self.max_grad_norm,
             "mixed_precision": self.mixed_precision,
+            "use_fp8": self.use_fp8,
+            "gradient_checkpointing": self.gradient_checkpointing,
             "seed": self.seed,
             "output_dir": self.output_dir,
             "num_workers": self.num_workers,
@@ -110,4 +158,5 @@ class TrainingConfig:
             "persistent_workers": self.persistent_workers,
             "pin_memory_device": self.pin_memory_device,
             "log_every_n_steps": self.log_every_n_steps,
+            "val_split": self.val_split,
         }

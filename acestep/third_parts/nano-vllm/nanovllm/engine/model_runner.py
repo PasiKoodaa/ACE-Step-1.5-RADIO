@@ -1,5 +1,5 @@
+import json
 import os
-import pickle
 import torch
 import torch.distributed as dist
 from multiprocessing.synchronize import Event
@@ -8,6 +8,7 @@ import sys
 
 from nanovllm.config import Config
 from acestep.debug_utils import debug_start, debug_end
+from nanovllm import distributed as dist_utils
 
 # Debug logging - enable with NANOVLLM_DEBUG=1
 _DEBUG = os.environ.get("NANOVLLM_DEBUG", "0") == "1"
@@ -23,6 +24,60 @@ from nanovllm.utils.context import set_context, get_context, reset_context
 from nanovllm.utils.loader import load_model
 
 import socket
+
+
+def _encode_for_shm(items: list) -> bytes:
+    """Encode IPC arguments to UTF-8 JSON bytes for shared-memory transport.
+
+    Replaces ``pickle`` to avoid arbitrary code execution on deserialization.
+    Only the types that flow through the shared-memory IPC channel are
+    supported: ``str``, ``int``, ``float``, ``bool``, ``None``, ``list``, and
+    ``Sequence`` (serialised via its ``__getstate__`` tuple).
+
+    Args:
+        items: The flat list ``[method_name, *args]`` to encode.
+
+    Returns:
+        UTF-8 encoded JSON bytes.
+
+    Raises:
+        TypeError: If an unsupported type is encountered.
+    """
+    def _enc(obj):
+        if isinstance(obj, Sequence):
+            state = obj.__getstate__()
+            return {"__seq__": list(state)}
+        if isinstance(obj, list):
+            return [_enc(x) for x in obj]
+        if isinstance(obj, (str, int, float, bool)) or obj is None:
+            return obj
+        raise TypeError(f"Unsupported type for IPC serialization: {type(obj).__name__}")
+
+    return json.dumps([_enc(x) for x in items], separators=(",", ":")).encode("utf-8")
+
+
+def _decode_from_shm(data: bytes) -> list:
+    """Decode IPC arguments from UTF-8 JSON bytes produced by ``_encode_for_shm``.
+
+    Reconstructs ``Sequence`` objects from their serialised state without
+    invoking ``pickle.loads``, preventing arbitrary code execution.
+
+    Args:
+        data: Raw UTF-8 JSON bytes from shared memory.
+
+    Returns:
+        The decoded list ``[method_name, *args]``.
+    """
+    def _dec(obj):
+        if isinstance(obj, dict) and "__seq__" in obj:
+            seq = object.__new__(Sequence)
+            seq.__setstate__(tuple(obj["__seq__"]))
+            return seq
+        if isinstance(obj, list):
+            return [_dec(x) for x in obj]
+        return obj
+
+    return [_dec(x) for x in json.loads(data.decode("utf-8"))]
 
 
 def find_available_port(start_port: int = 2333, max_attempts: int = 100) -> int:
@@ -64,20 +119,32 @@ class ModelRunner:
         self.world_size = config.tensor_parallel_size
         self.rank = rank
         self.event = event
-        dist_port = find_available_port()
-        print(f"[debug]dist_port: {dist_port}")
-        # Use gloo backend on Windows, nccl on Linux/other platforms
-        backend = "gloo" if sys.platform == "win32" else "nccl"
-        dist.init_process_group(backend, f"tcp://127.0.0.1:{dist_port}", world_size=self.world_size, rank=rank)
+        
+        # Only initialize distributed if world_size > 1
+        if self.world_size > 1:
+            dist_port = find_available_port()
+            print(f"[debug]dist_port: {dist_port}")
+            # Use gloo backend on Windows, nccl on Linux/other platforms
+            backend = "gloo" if sys.platform == "win32" else "nccl"
+            dist_utils.initialize_distributed(backend, f"tcp://127.0.0.1:{dist_port}", world_size=self.world_size, rank=rank)
+        
         torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
+        
+        # Detect GPU compute capability to determine bfloat16 support
+        # Bfloat16 requires Ampere (compute capability >= 8.0) or newer
+        gpu_props = torch.cuda.get_device_properties(rank)
+        # Use tuple comparison to handle compute capability correctly
+        # (e.g., 7.5 < 8.0, 8.0 >= 8.0, 8.6 >= 8.0, etc.)
+        supports_bfloat16 = (gpu_props.major, gpu_props.minor) >= (8, 0)
+        
         # Use dtype instead of deprecated torch_dtype
         config_dtype = getattr(hf_config, 'dtype', getattr(hf_config, 'torch_dtype', torch.bfloat16))
 
         # Validate and convert config_dtype to a valid torch floating-point dtype
-        # Default to bfloat16 for CUDA (required for Flash Attention 2)
+        # Default to bfloat16 for CUDA (required for Flash Attention 2) if GPU supports it
         if config_dtype is None:
-            config_dtype = torch.bfloat16
+            config_dtype = torch.bfloat16 if supports_bfloat16 else torch.float16
         elif isinstance(config_dtype, str):
             # Convert string dtype to torch dtype
             dtype_map = {
@@ -90,10 +157,15 @@ class ModelRunner:
                 'torch.bfloat16': torch.bfloat16,
                 'torch.float64': torch.float64,
             }
-            config_dtype = dtype_map.get(config_dtype.lower(), torch.bfloat16)
+            config_dtype = dtype_map.get(config_dtype.lower(), torch.bfloat16 if supports_bfloat16 else torch.float16)
         elif not isinstance(config_dtype, torch.dtype) or not config_dtype.is_floating_point:
-            # If not a valid floating-point torch dtype, default to bfloat16
-            config_dtype = torch.bfloat16
+            # If not a valid floating-point torch dtype, default based on GPU capability
+            config_dtype = torch.bfloat16 if supports_bfloat16 else torch.float16
+        
+        # Override to float16 if config requested bfloat16 but GPU doesn't support it
+        if config_dtype == torch.bfloat16 and not supports_bfloat16:
+            print(f"[nanovllm] GPU {gpu_props.name} (compute capability {gpu_props.major}.{gpu_props.minor}) does not support bfloat16. Using float16 instead.", flush=True)
+            config_dtype = torch.float16
 
         self.dtype = config_dtype  # Save for later use
         torch.set_default_dtype(config_dtype)
@@ -119,9 +191,9 @@ class ModelRunner:
         if self.world_size > 1:
             if rank == 0:
                 self.shm = SharedMemory(name="nanovllm", create=True, size=2**20)
-                dist.barrier()
+                dist_utils.barrier()
             else:
-                dist.barrier()
+                dist_utils.barrier()
                 self.shm = SharedMemory(name="nanovllm")
                 self.loop()
 
@@ -163,13 +235,13 @@ class ModelRunner:
     def exit(self):
         if self.world_size > 1:
             self.shm.close()
-            dist.barrier()
+            dist_utils.barrier()
             if self.rank == 0:
                 self.shm.unlink()
         if not self.enforce_eager:
             del self.graphs, self.graph_pool
         torch.cuda.synchronize()
-        dist.destroy_process_group()
+        dist_utils.destroy_process_group()
 
     def loop(self):
         while True:
@@ -182,13 +254,13 @@ class ModelRunner:
         assert self.world_size > 1 and self.rank > 0
         self.event.wait()
         n = int.from_bytes(self.shm.buf[0:4], "little")
-        method_name, *args = pickle.loads(self.shm.buf[4:n+4])
+        method_name, *args = _decode_from_shm(bytes(self.shm.buf[4:n+4]))
         self.event.clear()
         return method_name, args
 
     def write_shm(self, method_name, *args):
         assert self.world_size > 1 and self.rank == 0
-        data = pickle.dumps([method_name, *args])
+        data = _encode_for_shm([method_name, *args])
         n = len(data)
         self.shm.buf[0:4] = n.to_bytes(4, "little")
         self.shm.buf[4:n+4] = data
@@ -218,6 +290,22 @@ class ModelRunner:
         hf_config = config.hf_config
         free, total = torch.cuda.mem_get_info()
         current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
+        
+        # Account for per-process memory fraction (set via MAX_CUDA_VRAM simulation)
+        import os as _os
+        _debug_vram = _os.environ.get("MAX_CUDA_VRAM")
+        if _debug_vram is not None:
+            try:
+                _simulated_gb = float(_debug_vram)
+                _total_gb = total / (1024 ** 3)
+                if _simulated_gb < _total_gb:
+                    # Effective total and free are capped by simulation
+                    reserved = torch.cuda.memory_reserved()
+                    total = int(_simulated_gb * (1024 ** 3))
+                    free = max(0, total - reserved)
+            except (ValueError, TypeError):
+                pass
+        
         num_kv_heads = hf_config.num_key_value_heads // self.world_size
         head_dim = getattr(hf_config, "head_dim", hf_config.hidden_size // hf_config.num_attention_heads)
         block_bytes = 2 * hf_config.num_hidden_layers * self.block_size * num_kv_heads * head_dim * self.dtype.itemsize
@@ -227,6 +315,13 @@ class ModelRunner:
         # Use free memory but respect the gpu_memory_utilization limit
         target_total_usage = total * config.gpu_memory_utilization
         available_for_kv_cache = min(free * 0.9, target_total_usage - current)
+        
+        # Safety check: ensure we leave at least ~1 GB free for DiT inference
+        # activations that will run after LM generation. Without this, the KV
+        # cache can consume all free VRAM and cause OOM during DiT forward pass.
+        MIN_RESERVE_BYTES = int(1.0 * 1024**3)  # 1 GB reserved for other models
+        max_kv_from_free = max(0, free - MIN_RESERVE_BYTES) * 0.9
+        available_for_kv_cache = min(available_for_kv_cache, max_kv_from_free)
         
         # Ensure we have positive memory available
         if available_for_kv_cache <= 0:
@@ -242,11 +337,21 @@ class ModelRunner:
             )
         max_tokens_capacity = config.num_kvcache_blocks * self.block_size
         kv_cache_size_gb = config.num_kvcache_blocks * block_bytes / 1024**3
+        
+        # If KV cache would leave less than 1 GB free, warn and suggest reducing max_model_len
+        post_kv_free = (free - config.num_kvcache_blocks * block_bytes) / 1024**3
+        if post_kv_free < 1.0:
+            print(
+                f"[nanovllm] WARNING: After KV cache allocation, only {post_kv_free:.2f} GB free. "
+                f"DiT inference may OOM. Consider reducing max_model_len or using CPU offload."
+            )
+        
         print(
             f"[nanovllm] KV cache allocated: {config.num_kvcache_blocks} blocks × {self.block_size} tokens = "
             f"{max_tokens_capacity} tokens capacity, {kv_cache_size_gb:.2f} GB "
             f"(free: {free / 1024**3:.2f} GB, used: {current / 1024**3:.2f} GB, "
-            f"target: {target_total_usage / 1024**3:.2f} GB, block: {block_bytes / 1024**2:.2f} MB)"
+            f"target: {target_total_usage / 1024**3:.2f} GB, block: {block_bytes / 1024**2:.2f} MB, "
+            f"post_kv_free: {post_kv_free:.2f} GB)"
         )
         self.kv_cache = torch.empty(2, hf_config.num_hidden_layers, config.num_kvcache_blocks, self.block_size, num_kv_heads, head_dim)
         layer_id = 0

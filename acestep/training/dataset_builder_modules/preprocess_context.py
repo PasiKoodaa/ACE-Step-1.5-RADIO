@@ -1,9 +1,20 @@
 import torch
 
 
-def build_context_latents(silence_latent, latent_length: int, device, dtype):
+def build_context_latents(
+    silence_latent,
+    latent_length: int,
+    device,
+    dtype,
+    src_latents: torch.Tensor = None,
+):
     """Build context latents for text2music."""
-    src_latents = silence_latent[:, :latent_length, :].to(dtype)
+    if src_latents is None:
+        src_latents = silence_latent[:, :latent_length, :].to(dtype)
+    else:
+        if src_latents.dim() == 2:
+            src_latents = src_latents.unsqueeze(0)
+        src_latents = src_latents.to(device=device, dtype=dtype)
     if src_latents.shape[0] < 1:
         src_latents = src_latents.expand(1, -1, -1)
 

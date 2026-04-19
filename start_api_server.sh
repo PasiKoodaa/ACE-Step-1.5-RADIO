@@ -166,6 +166,48 @@ fi
 echo "[Environment] Using uv package manager..."
 echo
 
+# Ensure PyTorch build supports legacy NVIDIA GPUs (e.g., Pascal/Quadro P1000).
+# Newer CUDA wheels can omit sm_61, which causes runtime model-init failures.
+_ensure_legacy_nvidia_torch_compat() {
+    [[ "${ACESTEP_SKIP_LEGACY_TORCH_FIX:-}" == "true" ]] && return 0
+    [[ ! -x "$SCRIPT_DIR/.venv/bin/python" ]] && return 0
+
+    local compat_status
+    if (cd "$SCRIPT_DIR" && .venv/bin/python -c \
+        "import os, sys; sys.path.insert(0, os.getcwd()); from acestep.launcher_compat import legacy_torch_fix_probe_exit_code; raise SystemExit(legacy_torch_fix_probe_exit_code())"); then
+        return 0
+    else
+        compat_status=$?
+    fi
+
+    if [[ "$compat_status" -eq 0 ]]; then
+        return 0
+    fi
+    if [[ "$compat_status" -ne 42 ]]; then
+        echo "[Compatibility] Error: legacy NVIDIA compatibility probe failed with exit code $compat_status."
+        return "$compat_status"
+    fi
+
+    echo "[Compatibility] Applying legacy NVIDIA torch build (CUDA 12.1, supports sm_61)..."
+    if (cd "$SCRIPT_DIR" && uv pip install --python .venv/bin/python --force-reinstall \
+        --index-url https://download.pytorch.org/whl/cu121 \
+        torch==2.5.1+cu121 torchvision==0.20.1+cu121 torchaudio==2.5.1+cu121); then
+        echo "[Compatibility] Legacy torch install complete."
+        # Keep a legacy-compatible torchao so INT8 quantization remains available
+        # on low-VRAM Pascal/Quadro GPUs.
+        if (cd "$SCRIPT_DIR" && uv pip install --python .venv/bin/python --force-reinstall torchao==0.11.0 >/dev/null 2>&1); then
+            echo "[Compatibility] Installed torchao==0.11.0 (legacy-compatible)."
+        else
+            echo "[Compatibility] Warning: failed to install torchao==0.11.0. Quantization may be unavailable."
+        fi
+    else
+        echo "[Compatibility] Warning: failed to install legacy torch automatically."
+        echo "[Compatibility] Run manually:"
+        echo "  uv pip install --python .venv/bin/python --force-reinstall --index-url https://download.pytorch.org/whl/cu121 torch==2.5.1+cu121 torchvision==0.20.1+cu121 torchaudio==2.5.1+cu121"
+        return 1
+    fi
+}
+
 # Check if virtual environment exists
 if [[ ! -d "$SCRIPT_DIR/.venv" ]]; then
     echo "[Setup] Virtual environment not found. Setting up environment..."
@@ -174,7 +216,24 @@ if [[ ! -d "$SCRIPT_DIR/.venv" ]]; then
     echo "Running: uv sync"
     echo
 
-    cd "$SCRIPT_DIR" && uv sync
+    if ! (cd "$SCRIPT_DIR" && uv sync); then
+        echo
+        echo "[Retry] Online sync failed, retrying in offline mode..."
+        echo
+        if ! (cd "$SCRIPT_DIR" && uv sync --offline); then
+            echo
+            echo "========================================"
+            echo "[Error] Failed to setup environment"
+            echo "========================================"
+            echo
+            echo "Both online and offline modes failed."
+            echo "Please check:"
+            echo "  1. Your internet connection (required for first-time setup)"
+            echo "  2. Ensure you have enough disk space"
+            echo "  3. Try running: uv sync manually"
+            exit 1
+        fi
+    fi
 
     echo
     echo "========================================"
@@ -183,13 +242,32 @@ if [[ ! -d "$SCRIPT_DIR/.venv" ]]; then
     echo
 fi
 
+_ensure_legacy_nvidia_torch_compat
+
 echo "Starting ACE-Step API Server..."
 echo
 
 # Build command with optional parameters
-CMD="uv run acestep-api --host $HOST --port $PORT"
-[[ -n "$API_KEY" ]] && CMD="$CMD $API_KEY"
-[[ -n "$DOWNLOAD_SOURCE" ]] && CMD="$CMD $DOWNLOAD_SOURCE"
-[[ -n "$LM_MODEL_PATH" ]] && CMD="$CMD $LM_MODEL_PATH"
+ACESTEP_ARGS="acestep-api --host $HOST --port $PORT"
+[[ -n "$API_KEY" ]] && ACESTEP_ARGS="$ACESTEP_ARGS $API_KEY"
+[[ -n "$DOWNLOAD_SOURCE" ]] && ACESTEP_ARGS="$ACESTEP_ARGS $DOWNLOAD_SOURCE"
+[[ -n "$LM_MODEL_PATH" ]] && ACESTEP_ARGS="$ACESTEP_ARGS $LM_MODEL_PATH"
 
-cd "$SCRIPT_DIR" && $CMD
+cd "$SCRIPT_DIR" && uv run --no-sync $ACESTEP_ARGS || {
+    echo
+    echo "[Retry] Online dependency resolution failed, retrying in offline mode..."
+    echo
+    uv run --offline --no-sync $ACESTEP_ARGS || {
+        echo
+        echo "========================================"
+        echo "[Error] Failed to start ACE-Step API Server"
+        echo "========================================"
+        echo
+        echo "Both online and offline modes failed."
+        echo "Please check:"
+        echo "  1. Your internet connection (for first-time setup)"
+        echo "  2. If dependencies were previously installed (offline mode requires a prior successful install)"
+        echo "  3. Try running: uv sync --offline"
+        exit 1
+    }
+}

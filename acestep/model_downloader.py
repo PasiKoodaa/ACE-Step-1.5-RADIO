@@ -8,11 +8,129 @@ with intelligent fallback between download sources.
 
 import os
 import sys
+import hashlib
+import shutil
 import argparse
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
 
 from loguru import logger
+
+
+# =============================================================================
+# Model Code File Sync (GitHub repo -> checkpoint directories)
+# =============================================================================
+
+# Mapping from checkpoint directory name to source model variant in acestep/models/
+_CHECKPOINT_TO_VARIANT: Dict[str, str] = {
+    "acestep-v15-turbo": "turbo",
+    "acestep-v15-sft": "sft",
+    "acestep-v15-base": "base",
+    # SFT variants (base-SFT uses the same model code as SFT)
+    "acestep-v15-base-sft-fix-inst": "sft",
+    # Turbo variants all share the turbo model code
+    "acestep-v15-turbo-shift1": "turbo",
+    "acestep-v15-turbo-shift3": "turbo",
+    "acestep-v15-turbo-continuous": "turbo",
+    "acestep-v15-turbo-fix-inst-shift3": "turbo",
+    "acestep-v15-turbo-fix-inst-shift-continuous": "turbo",
+    "acestep-v15-turbo-fix-inst-shift-dynamic": "turbo",
+    "acestep-v15-turbo-rl": "turbo",
+    # XL (4B DiT) variants have their own model code under acestep/models/xl_*/
+    "acestep-v15-xl-base": "xl_base",
+    "acestep-v15-xl-sft": "xl_sft",
+    "acestep-v15-xl-turbo": "xl_turbo",
+}
+
+
+def _get_models_source_dir() -> Path:
+    """Get the acestep/models/ directory (authoritative source for model code)."""
+    return Path(__file__).resolve().parent / "models"
+
+
+def _file_hash(filepath: Path) -> str:
+    """Compute SHA-256 hash of a file's contents."""
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _check_code_mismatch(model_name: str, checkpoints_dir) -> List[str]:
+    """
+    Compare .py files in acestep/models/{variant}/ with those in the checkpoint directory.
+
+    Args:
+        model_name: Checkpoint directory name (e.g. "acestep-v15-turbo")
+        checkpoints_dir: Path to the checkpoints root directory
+
+    Returns:
+        List of filenames that differ (empty list if all match or model_name is unknown)
+    """
+    variant = _CHECKPOINT_TO_VARIANT.get(model_name)
+    if variant is None:
+        return []
+
+    source_dir = _get_models_source_dir() / variant
+    if not source_dir.exists():
+        return []
+
+    if isinstance(checkpoints_dir, str):
+        checkpoints_dir = Path(checkpoints_dir)
+    target_dir = checkpoints_dir / model_name
+
+    mismatched = []
+    for src_file in source_dir.glob("*.py"):
+        if src_file.name == "__init__.py":
+            continue
+        dst_file = target_dir / src_file.name
+        if not dst_file.exists():
+            mismatched.append(src_file.name)
+        elif _file_hash(src_file) != _file_hash(dst_file):
+            mismatched.append(src_file.name)
+
+    return mismatched
+
+
+def _sync_model_code_files(model_name: str, checkpoints_dir) -> List[str]:
+    """
+    Copy .py files from acestep/models/{variant}/ into the checkpoint directory,
+    overwriting the HuggingFace-downloaded versions.
+
+    Args:
+        model_name: Checkpoint directory name (e.g. "acestep-v15-turbo")
+        checkpoints_dir: Path to the checkpoints root directory
+
+    Returns:
+        List of filenames that were synced (empty if model_name is unknown or no source)
+    """
+    variant = _CHECKPOINT_TO_VARIANT.get(model_name)
+    if variant is None:
+        return []
+
+    source_dir = _get_models_source_dir() / variant
+    if not source_dir.exists():
+        logger.warning(f"[Model Sync] Source directory not found: {source_dir}")
+        return []
+
+    if isinstance(checkpoints_dir, str):
+        checkpoints_dir = Path(checkpoints_dir)
+    target_dir = checkpoints_dir / model_name
+    if not target_dir.exists():
+        logger.warning(f"[Model Sync] Target directory not found: {target_dir}")
+        return []
+
+    synced = []
+    for src_file in source_dir.glob("*.py"):
+        if src_file.name == "__init__.py":
+            continue
+        dst_file = target_dir / src_file.name
+        shutil.copy2(src_file, dst_file)
+        synced.append(src_file.name)
+        logger.debug(f"[Model Sync] Synced {src_file.name} -> {dst_file}")
+
+    return synced
 
 
 # =============================================================================
@@ -64,7 +182,7 @@ def _download_from_huggingface_internal(
     snapshot_download(
         repo_id=repo_id,
         local_dir=str(local_dir),
-        local_dir_use_symlinks=False,
+        local_dir_use_symlinks="auto",
         token=token,
     )
 
@@ -179,6 +297,10 @@ SUBMODEL_REGISTRY: Dict[str, str] = {
     "acestep-v15-base": "ACE-Step/acestep-v15-base",
     "acestep-v15-turbo-shift1": "ACE-Step/acestep-v15-turbo-shift1",
     "acestep-v15-turbo-continuous": "ACE-Step/acestep-v15-turbo-continuous",
+    # XL (4B DiT) models
+    "acestep-v15-xl-base": "ACE-Step/acestep-v15-xl-base",
+    "acestep-v15-xl-sft": "ACE-Step/acestep-v15-xl-sft",
+    "acestep-v15-xl-turbo": "ACE-Step/acestep-v15-xl-turbo",
 }
 
 # Components that come from the main model repo (ACE-Step/Ace-Step1.5)
@@ -194,24 +316,68 @@ DEFAULT_LM_MODEL = "acestep-5Hz-lm-1.7B"
 
 
 def get_project_root() -> Path:
-    """Get the project root directory."""
-    current_file = Path(__file__).resolve()
-    return current_file.parent.parent
+    """Get the project root directory.
+
+    Returns the directory set by the ``ACESTEP_PROJECT_ROOT`` environment
+    variable when present, otherwise the current working directory.  Using
+    the working directory (rather than ``__file__``) keeps the checkpoints
+    folder next to where the user launched the process, regardless of whether
+    the package was installed via ``pip install .`` or run from source.
+    """
+    env_root = os.environ.get("ACESTEP_PROJECT_ROOT")
+    if env_root:
+        return Path(env_root).resolve()
+    return Path(os.getcwd())
 
 
 def get_checkpoints_dir(custom_dir: Optional[str] = None) -> Path:
-    """Get the checkpoints directory path."""
+    """Get the checkpoints directory path.
+
+    Resolution order:
+    1. *custom_dir* argument (passed programmatically)
+    2. ``ACESTEP_CHECKPOINTS_DIR`` environment variable – allows users to
+       share a single model directory across multiple ACE-Step installations,
+       avoiding duplicate downloads that waste disk space.
+    3. ``<project_root>/checkpoints`` (original default)
+    """
     if custom_dir:
         return Path(custom_dir)
+    env_dir = os.environ.get("ACESTEP_CHECKPOINTS_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
     return get_project_root() / "checkpoints"
+
+
+def _contains_model_weights(model_path: Path) -> bool:
+    """Return whether a model directory contains at least one weights artifact.
+
+    Args:
+        model_path: Candidate model directory path.
+
+    Returns:
+        `True` when a known model weights file exists in the directory.
+    """
+    weight_filenames = (
+        "model.safetensors",
+        "model.safetensors.index.json",
+        "pytorch_model.bin",
+        "pytorch_model.bin.index.json",
+        "diffusion_pytorch_model.safetensors",
+        "diffusion_pytorch_model.safetensors.index.json",
+        "diffusion_pytorch_model.bin",
+        "diffusion_pytorch_model.bin.index.json",
+    )
+    if not model_path.is_dir():
+        return False
+    return any((model_path / filename).exists() for filename in weight_filenames)
 
 
 def check_main_model_exists(checkpoints_dir: Optional[Path] = None) -> bool:
     """
     Check if the main model components exist in the checkpoints directory.
-    
+
     Returns:
-        True if all main model components exist, False otherwise.
+        True if all main model components contain weights, False otherwise.
     """
     if checkpoints_dir is None:
         checkpoints_dir = get_checkpoints_dir()
@@ -220,7 +386,7 @@ def check_main_model_exists(checkpoints_dir: Optional[Path] = None) -> bool:
 
     for component in MAIN_MODEL_COMPONENTS:
         component_path = checkpoints_dir / component
-        if not component_path.exists():
+        if not _contains_model_weights(component_path):
             return False
     return True
 
@@ -245,7 +411,7 @@ def check_model_exists(model_name: str, checkpoints_dir: Optional[Path] = None) 
         checkpoints_dir = Path(checkpoints_dir)
 
     model_path = checkpoints_dir / model_name
-    return model_path.exists()
+    return _contains_model_weights(model_path)
 
 
 def list_available_models() -> Dict[str, str]:
@@ -302,7 +468,15 @@ def download_main_model(
     print("This may take a while depending on your internet connection...")
 
     # Use smart download with automatic fallback
-    return _smart_download(MAIN_MODEL_REPO, checkpoints_dir, token, prefer_source)
+    success, msg = _smart_download(MAIN_MODEL_REPO, checkpoints_dir, token, prefer_source)
+    if success:
+        # Sync model code files for all DiT components in the main model
+        for component in MAIN_MODEL_COMPONENTS:
+            if component in _CHECKPOINT_TO_VARIANT:
+                synced = _sync_model_code_files(component, checkpoints_dir)
+                if synced:
+                    logger.info(f"[Model Download] Synced code files for {component}: {synced}")
+    return success, msg
 
 
 def download_submodel(
@@ -348,7 +522,13 @@ def download_submodel(
     print(f"Destination: {model_path}")
 
     # Use smart download with automatic fallback
-    return _smart_download(repo_id, model_path, token, prefer_source)
+    success, msg = _smart_download(repo_id, model_path, token, prefer_source)
+    if success and model_name in _CHECKPOINT_TO_VARIANT:
+        # Sync model code files after successful download
+        synced = _sync_model_code_files(model_name, checkpoints_dir)
+        if synced:
+            logger.info(f"[Model Download] Synced code files for {model_name}: {synced}")
+    return success, msg
 
 
 def download_all_models(
@@ -550,6 +730,10 @@ Network Detection:
   Automatically detects network environment and chooses the best download source:
   - Google accessible -> HuggingFace (fallback to ModelScope)
   - Google blocked -> ModelScope (fallback to HuggingFace)
+
+Shared checkpoints directory:
+  Set ACESTEP_CHECKPOINTS_DIR to share models across multiple installations:
+  export ACESTEP_CHECKPOINTS_DIR=~/ace-step-models
 
 Alternative using huggingface-cli:
   huggingface-cli download ACE-Step/Ace-Step1.5 --local-dir ./checkpoints

@@ -27,6 +27,7 @@ CONFIG_FILE="${SCRIPT_DIR}/config.json"
 # Output dir at same level as .claude (go up 4 levels from scripts/)
 OUTPUT_DIR="$(cd "${SCRIPT_DIR}/../../../.." && pwd)/acestep_output"
 DEFAULT_API_URL="http://127.0.0.1:8001"
+STAR_MARKER_FILE="${SCRIPT_DIR}/.first_gen_done"
 
 # Colors
 RED='\033[0;31m'
@@ -34,6 +35,20 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
+BOLD='\033[1m'
+
+# Show GitHub star prompt on first successful generation
+show_star_prompt() {
+    if [ ! -f "$STAR_MARKER_FILE" ]; then
+        touch "$STAR_MARKER_FILE"
+        echo ""
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${BOLD}  ACE-Step is free and open-source.${NC}"
+        echo -e "  If you enjoyed this, a ${YELLOW}★ Star${NC} on GitHub means a lot to us!"
+        echo -e "  ${CYAN}→ https://github.com/ace-step/ACE-Step-1.5${NC}"
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    fi
+}
 
 # Check dependencies
 check_deps() {
@@ -72,6 +87,7 @@ ensure_output_dir() {
 DEFAULT_CONFIG='{
   "api_url": "http://127.0.0.1:8001",
   "api_key": "",
+  "api_mode": "native",
   "generation": {
     "thinking": true,
     "use_format": true,
@@ -85,7 +101,15 @@ DEFAULT_CONFIG='{
 # Ensure config file exists
 ensure_config() {
     if [ ! -f "$CONFIG_FILE" ]; then
-        echo "$DEFAULT_CONFIG" > "$CONFIG_FILE"
+        local example="${SCRIPT_DIR}/config.example.json"
+        if [ -f "$example" ]; then
+            cp "$example" "$CONFIG_FILE"
+            echo -e "${YELLOW}Config file created from config.example.json. Please configure your settings:${NC}"
+            echo -e "  ${CYAN}./scripts/acestep.sh config --set api_url <url>${NC}"
+            echo -e "  ${CYAN}./scripts/acestep.sh config --set api_key <key>${NC}"
+        else
+            echo "$DEFAULT_CONFIG" > "$CONFIG_FILE"
+        fi
     fi
 }
 
@@ -244,11 +268,20 @@ cmd_config() {
             --set) action="set"; key="$2"; value="$3"; shift 3 ;;
             --reset) action="reset"; shift ;;
             --list) action="list"; shift ;;
+            --check-key) action="check-key"; shift ;;
             *) shift ;;
         esac
     done
 
     case "$action" in
+        "check-key")
+            local api_key=$(get_config "api_key")
+            if [ -n "$api_key" ]; then
+                echo "api_key: configured"
+            else
+                echo "api_key: empty"
+            fi
+            ;;
         "get")
             [ -z "$key" ] && { echo -e "${RED}Error: --get requires KEY${NC}"; exit 1; }
             local result=$(get_config "$key")
@@ -261,11 +294,11 @@ cmd_config() {
         "reset")
             echo "$DEFAULT_CONFIG" > "$CONFIG_FILE"
             echo -e "${GREEN}Configuration reset to defaults.${NC}"
-            cat "$CONFIG_FILE"
+            jq 'walk(if type == "object" and has("api_key") and (.api_key | length) > 0 then .api_key = "***" else . end)' "$CONFIG_FILE"
             ;;
         "list")
             echo "Current configuration:"
-            cat "$CONFIG_FILE"
+            jq 'walk(if type == "object" and has("api_key") and (.api_key | length) > 0 then .api_key = "***" else . end)' "$CONFIG_FILE"
             ;;
         *)
             echo "Config file: $CONFIG_FILE"
@@ -488,6 +521,200 @@ download_audios() {
     done <<< "$audio_paths"
 }
 
+# =============================================================================
+# Completion Mode (OpenRouter /v1/chat/completions)
+# =============================================================================
+
+# Load api_mode from config (default: native)
+load_api_mode() {
+    local mode=$(get_config "api_mode")
+    echo "${mode:-native}"
+}
+
+# Get model ID from /v1/models endpoint for completion mode
+get_completion_model() {
+    local api_url="$1"
+    local user_model="$2"
+    local api_key=$(load_api_key)
+
+    # If user specified a model, prefix with acemusic/ if needed
+    if [ -n "$user_model" ]; then
+        if [[ "$user_model" == */* ]]; then
+            echo "$user_model"
+        else
+            echo "acemusic/${user_model}"
+        fi
+        return
+    fi
+
+    # Query /v1/models for the first available model
+    local response
+    if [ -n "$api_key" ]; then
+        response=$(curl -s -H "Authorization: Bearer ${api_key}" "${api_url}/v1/models" 2>/dev/null)
+    else
+        response=$(curl -s "${api_url}/v1/models" 2>/dev/null)
+    fi
+
+    local model_id
+    model_id=$(echo "$response" | jq -r '.data[0].id // empty' 2>/dev/null)
+    echo "${model_id:-acemusic/acestep-v15-turbo}"
+}
+
+# Decode base64 audio data URL and save to file
+# Handles cross-platform compatibility (Linux/macOS/Windows MSYS)
+decode_base64_audio() {
+    local data_url="$1"
+    local output_file="$2"
+
+    # Strip data URL prefix: data:audio/mpeg;base64,...
+    local b64_data="${data_url#data:*;base64,}"
+
+    local tmp_b64=$(mktemp)
+    printf '%s' "$b64_data" > "$tmp_b64"
+
+    if command -v base64 &> /dev/null; then
+        # Linux / macOS / MSYS2
+        base64 -d < "$tmp_b64" > "$output_file" 2>/dev/null || \
+        base64 -D < "$tmp_b64" > "$output_file" 2>/dev/null || \
+        python3 -c "import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))" < "$tmp_b64" > "$output_file" 2>/dev/null || \
+        python -c "import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))" < "$tmp_b64" > "$output_file" 2>/dev/null
+    else
+        # Fallback to python
+        python3 -c "import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))" < "$tmp_b64" > "$output_file" 2>/dev/null || \
+        python -c "import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))" < "$tmp_b64" > "$output_file" 2>/dev/null
+    fi
+
+    local decode_ok=$?
+    rm -f "$tmp_b64"
+    return $decode_ok
+}
+
+# Parse completion response: extract metadata, save audio files
+# Usage: parse_completion_response <response_file> <job_id>
+parse_completion_response() {
+    local resp_file="$1"
+    local job_id="$2"
+
+    ensure_output_dir
+
+    local audio_format=$(get_config "generation.audio_format")
+    [ -z "$audio_format" ] && audio_format="mp3"
+
+    # Check for error
+    local finish_reason
+    finish_reason=$(jq -r '.choices[0].finish_reason // "stop"' "$resp_file" 2>/dev/null)
+    if [ "$finish_reason" = "error" ]; then
+        local err_content
+        err_content=$(jq -r '.choices[0].message.content // "Unknown error"' "$resp_file" 2>/dev/null)
+        echo -e "${RED}Generation failed: $err_content${NC}"
+        return 1
+    fi
+
+    # Extract and display text content (metadata + lyrics)
+    local content
+    content=$(jq -r '.choices[0].message.content // empty' "$resp_file" 2>/dev/null)
+    if [ -n "$content" ]; then
+        echo "$content"
+        echo ""
+    fi
+
+    # Extract and save audio files
+    local audio_count
+    audio_count=$(jq -r '.choices[0].message.audio | length // 0' "$resp_file" 2>/dev/null)
+
+    if [ "$audio_count" -gt 0 ] 2>/dev/null; then
+        local i=0
+        while [ "$i" -lt "$audio_count" ]; do
+            local audio_url
+            audio_url=$(jq -r ".choices[0].message.audio[$i].audio_url.url // empty" "$resp_file" 2>/dev/null)
+
+            if [ -n "$audio_url" ]; then
+                local output_file="${OUTPUT_DIR}/${job_id}_$((i+1)).${audio_format}"
+                echo -e "  ${CYAN}Decoding audio $((i+1))...${NC}"
+
+                if decode_base64_audio "$audio_url" "$output_file"; then
+                    if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+                        echo -e "  ${GREEN}Saved: $output_file${NC}"
+                    else
+                        echo -e "  ${RED}Failed to decode audio $((i+1))${NC}"
+                        rm -f "$output_file" 2>/dev/null
+                    fi
+                else
+                    echo -e "  ${RED}Failed to decode audio $((i+1))${NC}"
+                    rm -f "$output_file" 2>/dev/null
+                fi
+            fi
+            i=$((i+1))
+        done
+    else
+        echo -e "  ${YELLOW}No audio files in response${NC}"
+    fi
+
+    # Save full response JSON (strip base64 audio to keep file small)
+    local clean_resp
+    clean_resp=$(jq 'del(.choices[].message.audio[].audio_url.url)' "$resp_file" 2>/dev/null)
+    if [ -n "$clean_resp" ]; then
+        save_result "$job_id" "$clean_resp"
+    else
+        save_result "$job_id" "$(cat "$resp_file")"
+    fi
+}
+
+# Send request to /v1/chat/completions and handle response
+# Usage: send_completion_request <api_url> <payload_file> <job_id_var>
+send_completion_request() {
+    local api_url="$1"
+    local payload_file="$2"
+    local api_key=$(load_api_key)
+
+    local resp_file=$(mktemp)
+
+    local http_code
+    if [ -n "$api_key" ]; then
+        http_code=$(curl -s -w "%{http_code}" --connect-timeout 10 --max-time 660 \
+            -o "$resp_file" \
+            -X POST "${api_url}/v1/chat/completions" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -H "Authorization: Bearer ${api_key}" \
+            -A "curl/8.7.1" \
+            --data-binary "@${payload_file}")
+    else
+        http_code=$(curl -s -w "%{http_code}" --connect-timeout 10 --max-time 660 \
+            -o "$resp_file" \
+            -X POST "${api_url}/v1/chat/completions" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -A "curl/8.7.1" \
+            --data-binary "@${payload_file}")
+    fi
+
+    rm -f "$payload_file"
+
+    if [ "$http_code" != "200" ]; then
+        local err_detail
+        err_detail=$(jq -r '.detail // .error.message // empty' "$resp_file" 2>/dev/null)
+        echo -e "${RED}Error: HTTP $http_code${NC}"
+        [ -n "$err_detail" ] && echo -e "${RED}$err_detail${NC}"
+        rm -f "$resp_file"
+        return 1
+    fi
+
+    # Generate a job_id from the completion id
+    local job_id
+    job_id=$(jq -r '.id // empty' "$resp_file" 2>/dev/null)
+    [ -z "$job_id" ] && job_id="completion-$(date +%s)"
+
+    echo ""
+    echo -e "${GREEN}Generation completed!${NC}"
+    echo ""
+
+    parse_completion_response "$resp_file" "$job_id"
+    rm -f "$resp_file"
+
+    echo ""
+    echo -e "${GREEN}Done! Files saved to: $OUTPUT_DIR${NC}"
+    show_star_prompt
+}
+
 # Wait for job and download results
 wait_for_job() {
     local api_url="$1"
@@ -530,6 +757,7 @@ wait_for_job() {
 
                 echo ""
                 echo -e "${GREEN}Done! Files saved to: $OUTPUT_DIR${NC}"
+                show_star_prompt
                 return 0
                 ;;
             2)
@@ -559,6 +787,8 @@ cmd_generate() {
     local caption="" lyrics="" description="" thinking="" use_format=""
     local no_thinking=false no_format=false no_wait=false
     local model="" language="" steps="" guidance="" seed="" duration="" bpm="" batch=""
+    local task_type="" src_audio="" cover_strength="" repaint_start="" repaint_end=""
+    local key_scale="" time_signature=""
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -578,6 +808,13 @@ cmd_generate() {
             --bpm) bpm="$2"; shift 2 ;;
             --batch) batch="$2"; shift 2 ;;
             --no-wait) no_wait=true; shift ;;
+            --task-type) task_type="$2"; shift 2 ;;
+            --src-audio) src_audio="$2"; shift 2 ;;
+            --cover-strength) cover_strength="$2"; shift 2 ;;
+            --repaint-start) repaint_start="$2"; shift 2 ;;
+            --repaint-end) repaint_end="$2"; shift 2 ;;
+            --key-scale|--key) key_scale="$2"; shift 2 ;;
+            --time-signature|--time-sig) time_signature="$2"; shift 2 ;;
             *) [ -z "$caption" ] && caption="$1"; shift ;;
         esac
     done
@@ -637,6 +874,16 @@ cmd_generate() {
             use_random_seed: true
         }')
 
+    # Validate src_audio file exists if provided
+    if [ -n "$src_audio" ]; then
+        if [ ! -f "$src_audio" ]; then
+            echo -e "${RED}Error: Source audio file not found: $src_audio${NC}"
+            exit 1
+        fi
+        # Default task_type to "cover" when src_audio is provided
+        [ -z "$task_type" ] && task_type="cover"
+    fi
+
     # Add optional parameters
     [ -n "$model" ] && payload=$(echo "$payload" | jq --arg v "$model" '. + {model: $v}')
     [ -n "$steps" ] && payload=$(echo "$payload" | jq --argjson v "$steps" '. + {inference_steps: $v}')
@@ -645,9 +892,21 @@ cmd_generate() {
     [ -n "$duration" ] && payload=$(echo "$payload" | jq --argjson v "$duration" '. + {audio_duration: $v}')
     [ -n "$bpm" ] && payload=$(echo "$payload" | jq --argjson v "$bpm" '. + {bpm: $v}')
     [ -n "$batch" ] && payload=$(echo "$payload" | jq --argjson v "$batch" '. + {batch_size: $v}')
+    [ -n "$task_type" ] && payload=$(echo "$payload" | jq --arg v "$task_type" '. + {task_type: $v}')
+    [ -n "$src_audio" ] && payload=$(echo "$payload" | jq --arg v "$src_audio" '. + {src_audio_path: $v}')
+    [ -n "$cover_strength" ] && payload=$(echo "$payload" | jq --argjson v "$cover_strength" '. + {audio_cover_strength: $v}')
+    [ -n "$repaint_start" ] && payload=$(echo "$payload" | jq --argjson v "$repaint_start" '. + {repainting_start: $v}')
+    [ -n "$repaint_end" ] && payload=$(echo "$payload" | jq --argjson v "$repaint_end" '. + {repainting_end: $v}')
+    [ -n "$key_scale" ] && payload=$(echo "$payload" | jq --arg v "$key_scale" '. + {key_scale: $v}')
+    [ -n "$time_signature" ] && payload=$(echo "$payload" | jq --arg v "$time_signature" '. + {time_signature: $v}')
+
+    local api_mode=$(load_api_mode)
 
     echo "Generating music..."
-    if [ -n "$description" ]; then
+    if [ -n "$task_type" ] && [ "$task_type" != "text2music" ]; then
+        echo "  Mode: $(echo "$task_type" | awk '{print toupper(substr($0,1,1)) substr($0,2)}') (${task_type})"
+        [ -n "$src_audio" ] && echo "  Source audio: $src_audio"
+    elif [ -n "$description" ]; then
         echo "  Mode: Simple (description)"
         echo "  Description: ${description:0:50}..."
     else
@@ -655,38 +914,152 @@ cmd_generate() {
         echo "  Caption: ${caption:0:50}..."
     fi
     echo "  Thinking: $thinking, Format: $use_format"
+    echo "  API: $api_mode"
     echo "  Output: $OUTPUT_DIR"
     echo ""
 
-    # Write payload to temp file to ensure proper UTF-8 encoding
-    local temp_payload=$(mktemp)
-    printf '%s' "$payload" > "$temp_payload"
+    if [ "$api_mode" = "completion" ]; then
+        # --- Completion mode: /v1/chat/completions ---
+        local model_id=$(get_completion_model "$api_url" "$model")
 
-    local api_key=$(load_api_key)
-    local response
-    if [ -n "$api_key" ]; then
-        response=$(curl -s -X POST "${api_url}/release_task" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -H "Authorization: Bearer ${api_key}" \
-            --data-binary "@${temp_payload}")
+        # Build message content parts
+        local message_content=""
+        local sample_mode=false
+        if [ -n "$description" ]; then
+            message_content="$description"
+            sample_mode=true
+        else
+            message_content="<prompt>${caption}</prompt>"
+            [ -n "$lyrics" ] && message_content="${message_content}<lyrics>${lyrics}</lyrics>"
+        fi
+
+        # Build completion payload
+        local payload_c
+        if [ -n "$src_audio" ]; then
+            # Audio input mode: use multipart content array with text + input_audio
+            # Encode audio to base64 using python to avoid shell argument limits
+            local audio_b64_file=$(mktemp)
+            python3 -c "
+import base64, sys
+with open(sys.argv[1], 'rb') as f:
+    sys.stdout.write(base64.b64encode(f.read()).decode('ascii'))
+" "$src_audio" > "$audio_b64_file"
+
+            local audio_ext="${src_audio##*.}"
+            [ -z "$audio_ext" ] && audio_ext="mp3"
+
+            # Build payload with audio using jq --rawfile to read base64 from file
+            payload_c=$(jq -n \
+                --arg model "$model_id" \
+                --arg text_content "$message_content" \
+                --rawfile audio_b64 "$audio_b64_file" \
+                --arg audio_format "$audio_ext" \
+                --argjson thinking "$thinking" \
+                --argjson use_format "$use_format" \
+                --argjson sample_mode "$sample_mode" \
+                --argjson use_cot_caption "$cot_caption" \
+                --argjson use_cot_language "$cot_language" \
+                --arg vocal_language "$language" \
+                --arg format "${def_audio_format:-mp3}" \
+                --arg task_type "${task_type:-text2music}" \
+                '{
+                    model: $model,
+                    messages: [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": $text_content},
+                            {"type": "input_audio", "input_audio": {"data": $audio_b64, "format": $audio_format}}
+                        ]
+                    }],
+                    stream: false,
+                    thinking: $thinking,
+                    use_format: $use_format,
+                    sample_mode: $sample_mode,
+                    use_cot_caption: $use_cot_caption,
+                    use_cot_language: $use_cot_language,
+                    task_type: $task_type,
+                    audio_config: {
+                        format: $format,
+                        vocal_language: $vocal_language
+                    }
+                }')
+
+            rm -f "$audio_b64_file"
+
+            # Add cover/repainting parameters
+            [ -n "$cover_strength" ] && payload_c=$(echo "$payload_c" | jq --argjson v "$cover_strength" '. + {audio_cover_strength: $v}')
+            [ -n "$repaint_start" ] && payload_c=$(echo "$payload_c" | jq --argjson v "$repaint_start" '. + {repainting_start: $v}')
+            [ -n "$repaint_end" ] && payload_c=$(echo "$payload_c" | jq --argjson v "$repaint_end" '. + {repainting_end: $v}')
+        else
+            # Text-only mode: use string content
+            payload_c=$(jq -n \
+                --arg model "$model_id" \
+                --arg content "$message_content" \
+                --argjson thinking "$thinking" \
+                --argjson use_format "$use_format" \
+                --argjson sample_mode "$sample_mode" \
+                --argjson use_cot_caption "$cot_caption" \
+                --argjson use_cot_language "$cot_language" \
+                --arg vocal_language "$language" \
+                --arg format "${def_audio_format:-mp3}" \
+                '{
+                    model: $model,
+                    messages: [{"role": "user", "content": $content}],
+                    stream: false,
+                    thinking: $thinking,
+                    use_format: $use_format,
+                    sample_mode: $sample_mode,
+                    use_cot_caption: $use_cot_caption,
+                    use_cot_language: $use_cot_language,
+                    audio_config: {
+                        format: $format,
+                        vocal_language: $vocal_language
+                    }
+                }')
+        fi
+
+        # Add optional parameters to completion payload
+        [ -n "$guidance" ] && payload_c=$(echo "$payload_c" | jq --argjson v "$guidance" '. + {guidance_scale: $v}')
+        [ -n "$seed" ] && payload_c=$(echo "$payload_c" | jq --argjson v "$seed" '. + {seed: $v}')
+        [ -n "$batch" ] && payload_c=$(echo "$payload_c" | jq --argjson v "$batch" '. + {batch_size: $v}')
+        [ -n "$duration" ] && payload_c=$(echo "$payload_c" | jq --argjson v "$duration" '.audio_config.duration = $v')
+        [ -n "$bpm" ] && payload_c=$(echo "$payload_c" | jq --argjson v "$bpm" '.audio_config.bpm = $v')
+        [ -n "$key_scale" ] && payload_c=$(echo "$payload_c" | jq --arg v "$key_scale" '.audio_config.key_scale = $v')
+        [ -n "$time_signature" ] && payload_c=$(echo "$payload_c" | jq --arg v "$time_signature" '.audio_config.time_signature = $v')
+
+        local temp_payload=$(mktemp)
+        printf '%s' "$payload_c" > "$temp_payload"
+
+        send_completion_request "$api_url" "$temp_payload"
     else
-        response=$(curl -s -X POST "${api_url}/release_task" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            --data-binary "@${temp_payload}")
-    fi
+        # --- Native mode: /release_task + polling ---
+        local temp_payload=$(mktemp)
+        printf '%s' "$payload" > "$temp_payload"
 
-    rm -f "$temp_payload"
+        local api_key=$(load_api_key)
+        local response
+        if [ -n "$api_key" ]; then
+            response=$(curl -s -X POST "${api_url}/release_task" \
+                -H "Content-Type: application/json; charset=utf-8" \
+                -H "Authorization: Bearer ${api_key}" \
+                --data-binary "@${temp_payload}")
+        else
+            response=$(curl -s -X POST "${api_url}/release_task" \
+                -H "Content-Type: application/json; charset=utf-8" \
+                --data-binary "@${temp_payload}")
+        fi
 
-    # Response is wrapped: {"data": {"task_id": ...}, "code": 200, ...}
-    local job_id=$(echo "$response" | jq -r '.data.task_id // .task_id // empty')
+        rm -f "$temp_payload"
 
-    [ -z "$job_id" ] && { echo -e "${RED}Error: Failed to create job${NC}"; echo "$response"; exit 1; }
+        local job_id=$(echo "$response" | jq -r '.data.task_id // .task_id // empty')
+        [ -z "$job_id" ] && { echo -e "${RED}Error: Failed to create job${NC}"; echo "$response"; exit 1; }
 
-    if [ "$no_wait" = true ]; then
-        echo "Job ID: $job_id"
-        echo "Use '$0 status $job_id' to check progress and download"
-    else
-        wait_for_job "$api_url" "$job_id"
+        if [ "$no_wait" = true ]; then
+            echo "Job ID: $job_id"
+            echo "Use '$0 status $job_id' to check progress and download"
+        else
+            wait_for_job "$api_url" "$job_id"
+        fi
     fi
 }
 
@@ -715,43 +1088,100 @@ cmd_random() {
     # Normalize boolean for jq --argjson
     thinking=$(normalize_bool "$thinking" "true")
 
+    local api_mode=$(load_api_mode)
+
     echo "Generating random music..."
     echo "  Thinking: $thinking"
+    echo "  API: $api_mode"
     echo "  Output: $OUTPUT_DIR"
     echo ""
 
-    local payload=$(jq -n --argjson thinking "$thinking" '{sample_mode: true, thinking: $thinking}')
+    if [ "$api_mode" = "completion" ]; then
+        # --- Completion mode ---
+        local model_id=$(get_completion_model "$api_url" "")
+        local def_audio_format=$(get_config "generation.audio_format")
 
-    # Write payload to temp file
-    local temp_payload=$(mktemp)
-    printf '%s' "$payload" > "$temp_payload"
+        local payload_c=$(jq -n \
+            --arg model "$model_id" \
+            --argjson thinking "$thinking" \
+            --arg format "${def_audio_format:-mp3}" \
+            '{
+                model: $model,
+                messages: [{"role": "user", "content": "Generate a random song"}],
+                stream: false,
+                sample_mode: true,
+                thinking: $thinking,
+                audio_config: { format: $format }
+            }')
 
-    local api_key=$(load_api_key)
-    local response
-    if [ -n "$api_key" ]; then
-        response=$(curl -s -X POST "${api_url}/release_task" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            -H "Authorization: Bearer ${api_key}" \
-            --data-binary "@${temp_payload}")
+        local temp_payload=$(mktemp)
+        printf '%s' "$payload_c" > "$temp_payload"
+
+        send_completion_request "$api_url" "$temp_payload"
     else
-        response=$(curl -s -X POST "${api_url}/release_task" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            --data-binary "@${temp_payload}")
+        # --- Native mode ---
+        local payload=$(jq -n --argjson thinking "$thinking" '{sample_mode: true, thinking: $thinking}')
+
+        local temp_payload=$(mktemp)
+        printf '%s' "$payload" > "$temp_payload"
+
+        local api_key=$(load_api_key)
+        local response
+        if [ -n "$api_key" ]; then
+            response=$(curl -s -X POST "${api_url}/release_task" \
+                -H "Content-Type: application/json; charset=utf-8" \
+                -H "Authorization: Bearer ${api_key}" \
+                --data-binary "@${temp_payload}")
+        else
+            response=$(curl -s -X POST "${api_url}/release_task" \
+                -H "Content-Type: application/json; charset=utf-8" \
+                --data-binary "@${temp_payload}")
+        fi
+
+        rm -f "$temp_payload"
+
+        local job_id=$(echo "$response" | jq -r '.data.task_id // .task_id // empty')
+        [ -z "$job_id" ] && { echo -e "${RED}Error: Failed to create job${NC}"; echo "$response"; exit 1; }
+
+        if [ "$no_wait" = true ]; then
+            echo "Job ID: $job_id"
+            echo "Use '$0 status $job_id' to check progress and download"
+        else
+            wait_for_job "$api_url" "$job_id"
+        fi
+    fi
+}
+
+# Cover command (shortcut for generate --task-type cover --src-audio)
+cmd_cover() {
+    check_deps
+    ensure_config
+
+    local src_audio=""
+    local args=()
+
+    # Extract src_audio as first positional arg, pass rest to generate
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --src-audio) src_audio="$2"; shift 2 ;;
+            -*) args+=("$1"); shift ;;
+            *)
+                if [ -z "$src_audio" ]; then
+                    src_audio="$1"; shift
+                else
+                    args+=("$1"); shift
+                fi
+                ;;
+        esac
+    done
+
+    if [ -z "$src_audio" ]; then
+        echo -e "${RED}Error: source audio file required${NC}"
+        echo "Usage: $0 cover <audio_file> -c \"caption\" -l \"lyrics\" [options]"
+        exit 1
     fi
 
-    rm -f "$temp_payload"
-
-    # Response is wrapped: {"data": {"task_id": ...}, "code": 200, ...}
-    local job_id=$(echo "$response" | jq -r '.data.task_id // .task_id // empty')
-
-    [ -z "$job_id" ] && { echo -e "${RED}Error: Failed to create job${NC}"; echo "$response"; exit 1; }
-
-    if [ "$no_wait" = true ]; then
-        echo "Job ID: $job_id"
-        echo "Use '$0 status $job_id' to check progress and download"
-    else
-        wait_for_job "$api_url" "$job_id"
-    fi
+    cmd_generate --src-audio "$src_audio" --task-type cover "${args[@]}"
 }
 
 # Help
@@ -764,6 +1194,7 @@ show_help() {
     echo ""
     echo "Commands:"
     echo "  generate    Generate music from text"
+    echo "  cover       Cover/repainting from source audio"
     echo "  random      Generate random music"
     echo "  status      Check job status and download results"
     echo "  models      List available models"
@@ -775,17 +1206,30 @@ show_help() {
     echo "  Audio files: $OUTPUT_DIR/<job_id>_1.mp3, ..."
     echo ""
     echo "Generate Options:"
-    echo "  -c, --caption     Music style/genre description (caption mode)"
-    echo "  -d, --description Simple description, LM auto-generates caption/lyrics"
-    echo "  -l, --lyrics      Lyrics text"
-    echo "  -t, --thinking    Enable thinking mode (default: true)"
-    echo "  --no-thinking     Disable thinking mode"
-    echo "  --no-format       Disable format enhancement"
+    echo "  -c, --caption       Music style/genre description (caption mode)"
+    echo "  -d, --description   Simple description, LM auto-generates caption/lyrics"
+    echo "  -l, --lyrics        Lyrics text"
+    echo "  -t, --thinking      Enable thinking mode (default: true)"
+    echo "  --no-thinking       Disable thinking mode"
+    echo "  --no-format         Disable format enhancement"
+    echo "  --duration          Duration in seconds"
+    echo "  --bpm               Beats per minute"
+    echo "  --key-scale         Musical key (e.g. \"E minor\")"
+    echo "  --time-signature    Time signature (e.g. \"4/4\")"
+    echo ""
+    echo "Cover/Repainting Options:"
+    echo "  --src-audio         Source audio file path"
+    echo "  --task-type         Task type: cover, repaint, text2music (default: auto)"
+    echo "  --cover-strength    Cover strength 0.0-1.0 (default: 1.0)"
+    echo "  --repaint-start     Repainting start position in seconds"
+    echo "  --repaint-end       Repainting end position in seconds"
     echo ""
     echo "Examples:"
     echo "  $0 generate \"Pop music with guitar\"           # Caption mode"
     echo "  $0 generate -d \"A February love song\"         # Simple mode (LM generates)"
     echo "  $0 generate -c \"Jazz\" -l \"[Verse] Hello\"      # With lyrics"
+    echo "  $0 cover song.mp3 -c \"Rock cover\" -l \"[Verse] ...\" --duration 120"
+    echo "  $0 generate --src-audio song.mp3 --task-type repaint -c \"Pop\" --repaint-start 30 --repaint-end 60"
     echo "  $0 random"
     echo "  $0 status <job_id>"
     echo "  $0 config --set generation.thinking false"
@@ -794,6 +1238,7 @@ show_help() {
 # Main
 case "$1" in
     generate) shift; cmd_generate "$@" ;;
+    cover) shift; cmd_cover "$@" ;;
     random) shift; cmd_random "$@" ;;
     status) shift; cmd_status "$@" ;;
     models) cmd_models ;;

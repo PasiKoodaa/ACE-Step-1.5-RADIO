@@ -7,18 +7,17 @@ backward-compatible Gradio UI support.
 """
 
 import math
+import inspect
 import os
 import tempfile
-import shutil
-import subprocess
-import sys
 from typing import Optional, Union, List, Dict, Any, Tuple
 from dataclasses import dataclass, field, asdict
 from loguru import logger
+import torch
 
-from acestep.audio_utils import AudioSaver, generate_uuid_from_params, is_audio_silent
-from acestep.constants import TASK_INSTRUCTIONS
-from acestep.gpu_config import get_gpu_config
+
+from acestep.audio_utils import AudioSaver, apply_fade, generate_uuid_from_params, normalize_audio, get_lora_weights_hash
+from acestep.constants import BPM_MIN, BPM_MAX, DURATION_MAX, TASK_TYPES, VALID_TIME_SIGNATURES
 
 # HuggingFace Space environment detection
 IS_HUGGINGFACE_SPACE = os.environ.get("SPACE_ID") is not None
@@ -54,6 +53,12 @@ class GenerationParams:
         timesignature: Time signature (2 for '2/4', 3 for '3/4', 4 for '4/4', 6 for '6/8'). Leave empty for auto-detection.
         vocal_language: Language code for vocals, e.g., "en", "zh", "ja", or "unknown". see acestep/constants.py:VALID_LANGUAGES
         duration: Target audio length in seconds. If <0 or None, model chooses automatically. 10 ~ 600
+        
+        # Audio Post-Processing
+        enable_normalization: Whether to apply loudness normalization to the output audio.
+        normalization_db: Target loudness in dB for normalization (e.g., -1.0 for -1 dBFS peak).
+        latent_shift: Additive shift applied to DiT latents before VAE decode (default 0, no shift).
+        latent_rescale: Multiplicative rescale applied to DiT latents before VAE decode (default 1.0, no rescale).
         
         # Generation Parameters
         inference_steps: Number of diffusion steps (e.g., 8 for turbo, 32–100 for base model).
@@ -100,6 +105,7 @@ class GenerationParams:
 
     # Text Inputs
     caption: str = ""
+    global_caption: str = ""  # Global/song-level caption for SFT-stems lego tasks
     lyrics: str = ""
     instrumental: bool = False
 
@@ -110,6 +116,16 @@ class GenerationParams:
     timesignature: str = ""
     duration: float = -1.0
 
+    # Audio Post-Processing
+    enable_normalization: bool = True
+    normalization_db: float = -1.0
+    fade_in_duration: float = 0.0   # Fade in duration in seconds. 0 = no fade in.
+    fade_out_duration: float = 0.0  # Fade out duration in seconds. 0 = no fade out.
+
+    # Latent Post-Processing (before VAE decode)
+    latent_shift: float = 0.0       # Additive shift on DiT latents. Default 0 = no shift.
+    latent_rescale: float = 1.0     # Multiplicative rescale on DiT latents. Default 1.0 = no rescale.
+
     # Advanced Settings
     inference_steps: int = 8
     seed: int = -1
@@ -119,13 +135,22 @@ class GenerationParams:
     cfg_interval_end: float = 1.0
     shift: float = 1.0
     infer_method: str = "ode"  # "ode" or "sde" - diffusion inference method
+    sampler_mode: str = "euler"  # "euler" (first-order) or "heun" (second-order predictor-corrector)
+    velocity_norm_threshold: float = 0.0  # Clamp velocity prediction norms (0 = disabled, try 2.0)
+    velocity_ema_factor: float = 0.0  # Velocity EMA smoothing (0 = disabled, try 0.1)
     # Custom timesteps (parsed from string like "0.97,0.76,0.615,0.5,0.395,0.28,0.18,0.085,0")
     # If provided, overrides inference_steps and shift
     timesteps: Optional[List[float]] = None
 
     repainting_start: float = 0.0
     repainting_end: float = -1
+    chunk_mask_mode: str = "auto"  # "explicit" = 0/1 mask from repaint range; "auto" = all 2.0 (model decides)
+    repaint_latent_crossfade_frames: int = 10  # latent-level boundary blend width (25Hz frames, 10≈0.4s)
+    repaint_wav_crossfade_sec: float = 0.0  # waveform-level splice crossfade (seconds, 0=hard cut)
+    repaint_mode: str = "balanced"  # "conservative", "balanced", or "aggressive"
+    repaint_strength: float = 0.5  # 0.0=aggressive, 1.0=conservative (balanced mode only)
     audio_cover_strength: float = 1.0
+    cover_noise_strength: float = 0.0  # 0=pure noise (no cover), 1=closest to src audio
 
     # 5Hz Language Model Parameters
     thinking: bool = True
@@ -136,7 +161,7 @@ class GenerationParams:
     lm_negative_prompt: str = "NO USER INPUT"
     use_cot_metas: bool = True
     use_cot_caption: bool = True
-    use_cot_lyrics: bool = False  # TODO: not used yet
+    use_cot_lyrics: bool = False  # gate is read in cli.py; not consumed by inference (see cot_lyrics below)
     use_cot_language: bool = True
     use_constrained_decoding: bool = True
 
@@ -147,6 +172,14 @@ class GenerationParams:
     cot_vocal_language: str = "unknown"
     cot_caption: str = ""
     cot_lyrics: str = ""
+
+    def __post_init__(self):
+        # shift=0 causes 0/0=NaN in timestep formula; shift<0 is nonsensical
+        if self.shift is not None and self.shift <= 0:
+            self.shift = 1.0
+        # inference_steps=0 produces empty diffusion loop (silent output)
+        if self.inference_steps is not None and self.inference_steps < 1:
+            self.inference_steps = 1
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary for JSON serialization."""
@@ -167,7 +200,9 @@ class GenerationConfig:
             - int: Single seed value (will be converted to list and padded)
         lm_batch_chunk_size: Batch chunk size for LM processing
         constrained_decoding_debug: Whether to enable constrained decoding debug
-        audio_format: Output audio format, one of "mp3", "wav", "flac". Default: "flac"
+        audio_format: Output audio format, one of "mp3", "wav", "flac", "wav32", "opus", "aac". Default: "flac"
+        mp3_bitrate: MP3 bitrate used when audio_format="mp3". Default: "128k"
+        mp3_sample_rate: MP3 output sample rate used when audio_format="mp3". Default: 48000
     """
     batch_size: int = 2
     allow_lm_batch: bool = False
@@ -176,6 +211,8 @@ class GenerationConfig:
     lm_batch_chunk_size: int = 8
     constrained_decoding_debug: bool = False
     audio_format: str = "flac"  # Default to FLAC for fast saving
+    mp3_bitrate: str = "128k"
+    mp3_sample_rate: int = 48000
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary for JSON serialization."""
@@ -338,25 +375,45 @@ def generate_music(
         # Otherwise, check if we need audio codes (lm_dit mode) or just metas (dit mode)
         user_provided_audio_codes = bool(params.audio_codes and str(params.audio_codes).strip())
 
-        # Safety: cover task without any source audio or codes produces silence.
-        if params.task_type == "cover":
-            no_src_audio = not (params.reference_audio or params.src_audio)
-            if no_src_audio and not user_provided_audio_codes:
-                logger.warning("Cover task requested without source audio or audio codes. Falling back to text2music.")
-                params.task_type = "text2music"
-                if params.instruction == TASK_INSTRUCTIONS.get("cover"):
-                    params.instruction = TASK_INSTRUCTIONS.get("text2music", params.instruction)
-
         # Determine infer_type: use "llm_dit" if we need audio codes, "dit" if only metas needed
         # For now, we use "llm_dit" if batch mode or if user hasn't provided codes
         # Use "dit" if user has provided codes (only need metas) or if explicitly only need metas
         # Note: This logic can be refined based on specific requirements
         need_audio_codes = not user_provided_audio_codes
 
+        # Determine if we should use chunk-based LM generation (always use chunks for consistency)
+        # Determine actual batch size for chunk processing
+        actual_batch_size = config.batch_size if config.batch_size is not None else 1
+
+        # Prepare seeds for batch generation
+        # Use config.seed if provided, otherwise fallback to params.seed
+        # Convert config.seed (None, int, or List[int]) to format that prepare_seeds accepts
+        seed_for_generation = ""
+        # Original code (commented out because it crashes on int seeds):
+        # if config.seeds is not None and len(config.seeds) > 0:
+        #     if isinstance(config.seeds, list):
+        #         # Convert List[int] to comma-separated string
+        #         seed_for_generation = ",".join(str(s) for s in config.seeds)
+
+        if config.seeds is not None:
+            if isinstance(config.seeds, list) and len(config.seeds) > 0:
+                # Convert List[int] to comma-separated string
+                seed_for_generation = ",".join(str(s) for s in config.seeds)
+            elif isinstance(config.seeds, int):
+                # Fix: Explicitly handle single integer seeds by converting to string.
+                # Previously, this would crash because 'len()' was called on an int.
+                seed_for_generation = str(config.seeds)
+
+        # Use dit_handler.prepare_seeds to handle seed list generation and padding
+        # This will handle all the logic: padding with random seeds if needed, etc.
+        actual_seed_list, _ = dit_handler.prepare_seeds(actual_batch_size, seed_for_generation, config.use_random_seed)
+
         # LM-based Chain-of-Thought reasoning
-        # Skip LM for cover/repaint tasks - these tasks use reference/src audio directly
-        # and don't need LM to generate audio codes
-        skip_lm_tasks = {"cover", "repaint"}
+        # Skip LM for cover/repaint/extract tasks - these tasks use reference/src audio directly
+        # and don't need LM to generate audio codes or metadata.
+        # For extract tasks, LLM-generated captions can conflict with the extract instruction
+        # and cause the DiT model to reconstruct input audio instead of extracting stems.
+        skip_lm_tasks = {"cover", "repaint", "extract"}
         
         # Determine if we should use LLM
         # LLM is needed for:
@@ -370,151 +427,12 @@ def generate_music(
         
         if params.task_type in skip_lm_tasks:
             logger.info(f"Skipping LM for task_type='{params.task_type}' - using DiT directly")
-
+        
         logger.info(f"[generate_music] LLM usage decision: thinking={params.thinking}, "
                    f"use_cot_caption={params.use_cot_caption}, use_cot_language={params.use_cot_language}, "
                    f"use_cot_metas={params.use_cot_metas}, need_lm_for_cot={need_lm_for_cot}, "
                    f"llm_initialized={llm_handler.llm_initialized if llm_handler else False}, use_lm={use_lm}")
-
-        def _infer_audio_duration_seconds(audio_path: str) -> Optional[float]:
-            """Best-effort duration inference for common audio formats."""
-            if not audio_path:
-                return None
-            # Try torchaudio (supports more formats when ffmpeg backend is available)
-            try:
-                import torchaudio
-                info = torchaudio.info(audio_path)
-                if info and info.num_frames and info.sample_rate:
-                    return float(info.num_frames) / float(info.sample_rate)
-            except Exception:
-                pass
-            # Try soundfile (fast for wav/flac)
-            try:
-                import soundfile as sf
-                info = sf.info(audio_path)
-                if info and info.frames and info.samplerate:
-                    return float(info.frames) / float(info.samplerate)
-            except Exception:
-                pass
-            # macOS fallback: use afinfo for m4a/aac
-            if sys.platform == "darwin" and shutil.which("afinfo"):
-                try:
-                    result = subprocess.run(
-                        ["afinfo", audio_path],
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                    )
-                    if result.stdout:
-                        for line in result.stdout.splitlines():
-                            if "duration:" in line:
-                                # Example: "duration:  183.165s"
-                                parts = line.strip().split()
-                                for p in parts:
-                                    if p.endswith("s"):
-                                        try:
-                                            return float(p.rstrip("s"))
-                                        except ValueError:
-                                            continue
-                except Exception:
-                    pass
-            return None
-
-        # Clamp duration and batch size to GPU limits (applies to non-Gradio callers too)
-        # IMPORTANT: This must happen BEFORE actual_batch_size is set, so that LM and DiT
-        # use the same batch size. Previously the MPS clamp happened after LM generation,
-        # causing LM to generate N samples but DiT to only process 1.
-        try:
-            # If duration not provided, try to infer from source audio to enable safe clamping.
-            if (audio_duration is None or float(audio_duration) <= 0) and (params.src_audio or params.reference_audio):
-                audio_path = params.src_audio or params.reference_audio
-                try:
-                    inferred = _infer_audio_duration_seconds(audio_path)
-                    if inferred and inferred > 0:
-                        audio_duration = inferred
-                        params.duration = inferred
-                        logger.info(f"[generate_music] Inferred duration from audio file: {inferred:.2f}s")
-                except Exception as e:
-                    logger.warning(f"[generate_music] Failed to infer duration from audio file: {e}")
-
-            gpu_config = get_gpu_config()
-            max_duration = gpu_config.max_duration_with_lm if use_lm else gpu_config.max_duration_without_lm
-            if audio_duration is not None and float(audio_duration) > 0 and float(audio_duration) > max_duration:
-                logger.warning(f"[generate_music] Duration {audio_duration}s exceeds GPU limit {max_duration}s. Clamping.")
-                audio_duration = float(max_duration)
-                params.duration = float(max_duration)
-
-            max_batch = gpu_config.max_batch_size_with_lm if use_lm else gpu_config.max_batch_size_without_lm
-            if config.batch_size is not None and config.batch_size > max_batch:
-                logger.warning(f"[generate_music] Batch size {config.batch_size} exceeds GPU limit {max_batch}. Clamping.")
-                config.batch_size = max_batch
-
-            # MPS memory-aware batch size adjustment for long durations.
-            # Mac unified memory is typically large (16-192GB), so we use a
-            # memory-based heuristic instead of a hard-coded batch=1 cutoff.
-            # Rough estimate: each batch item at 232s ≈ 2-3GB on MPS.
-            # We keep batch size as-is if GPU memory can handle it.
-            if (
-                hasattr(dit_handler, "device")
-                and dit_handler.device == "mps"
-                and audio_duration is not None
-                and float(audio_duration) > 180
-                and config.batch_size is not None
-                and config.batch_size > 1
-            ):
-                mem_gb = gpu_config.gpu_memory_gb
-                dur = float(audio_duration)
-                # Estimate memory per batch item (GB): ~0.01 GB per second of audio
-                # at batch=1, plus overhead. Conservative multiplier.
-                estimated_per_item_gb = dur * 0.015 + 2.0  # base 2GB + duration-proportional
-                estimated_total_gb = estimated_per_item_gb * config.batch_size
-                # Allow up to 80% of available memory for generation
-                available_gb = mem_gb * 0.8
-                if estimated_total_gb > available_gb:
-                    safe_batch = max(1, int(available_gb / estimated_per_item_gb))
-                    logger.warning(
-                        f"[generate_music] MPS long duration ({dur:.0f}s): estimated {estimated_total_gb:.1f}GB "
-                        f"for batch={config.batch_size} exceeds {available_gb:.1f}GB available. "
-                        f"Reducing batch size to {safe_batch}."
-                    )
-                    config.batch_size = safe_batch
-                else:
-                    logger.info(
-                        f"[generate_music] MPS long duration ({dur:.0f}s): estimated {estimated_total_gb:.1f}GB "
-                        f"for batch={config.batch_size}, {available_gb:.1f}GB available. Batch size OK."
-                    )
-        except Exception as e:
-            logger.warning(f"[generate_music] Failed to clamp duration/batch to GPU limits: {e}")
-
-        # Determine actual batch size for chunk processing
-        # This MUST be set AFTER the GPU limit clamping above to ensure LM and DiT
-        # use the same batch size.
-        actual_batch_size = config.batch_size if config.batch_size is not None else 1
-
-        # Prepare seeds for batch generation
-        # Use config.seed if provided, otherwise fallback to params.seed
-        # Convert config.seed (None, int, or List[int]) to format that prepare_seeds accepts
-        seed_for_generation = ""
-
-        if config.seeds is not None:
-            if isinstance(config.seeds, list) and len(config.seeds) > 0:
-                seed_for_generation = ",".join(str(s) for s in config.seeds)
-            elif isinstance(config.seeds, int):
-                seed_for_generation = str(config.seeds)
-        elif not config.use_random_seed and params.seed is not None:
-            try:
-                s = params.seed
-                if isinstance(s, (int, float)) and s >= 0:
-                    seed_for_generation = str(int(s))
-                elif isinstance(s, str) and s.strip() and s.strip() != "-1":
-                    seed_for_generation = s.strip()
-            except (TypeError, ValueError):
-                pass
-
-        # Use dit_handler.prepare_seeds to handle seed list generation and padding
-        # This will handle all the logic: padding with random seeds if needed, etc.
-        actual_seed_list, _ = dit_handler.prepare_seeds(actual_batch_size, seed_for_generation, config.use_random_seed)
-
+        
         if use_lm:
             # Convert sampling parameters - handle None values safely
             top_k_value = None if not params.lm_top_k or params.lm_top_k == 0 else int(params.lm_top_k)
@@ -657,13 +575,13 @@ def generate_music(
                     vocal_language=dit_input_vocal_language,
                     caption=dit_input_caption,
                     lyrics=dit_input_lyrics)
-                if not params.bpm:
+                if (not params.bpm or params.bpm <= 0) and bpm and int(bpm) > 0:
                     params.cot_bpm = bpm
                 if not params.keyscale:
                     params.cot_keyscale = key_scale
                 if not params.timesignature:
                     params.cot_timesignature = time_signature
-                if not params.duration:
+                if (not params.duration or params.duration <= 0) and audio_duration and float(audio_duration) > 0:
                     params.cot_duration = audio_duration
                 if not params.vocal_language:
                     params.cot_vocal_language = vocal_language
@@ -671,7 +589,6 @@ def generate_music(
                     params.cot_caption = caption
                 if not params.lyrics:
                     params.cot_lyrics = lyrics
-                dit_input_lyrics = lyrics
 
             # set cot caption and language if needed
             if params.use_cot_caption:
@@ -679,37 +596,74 @@ def generate_music(
             if params.use_cot_language:
                 dit_input_vocal_language = lm_generated_metadata.get("vocal_language", dit_input_vocal_language)
 
+        # Repaint/cover/extract: no LM run, so conditioning must come from params (caption + lyrics from GUI).
+        if params.task_type in ("repaint", "cover", "extract"):
+            dit_input_caption = params.caption or dit_input_caption
+            dit_input_lyrics = params.lyrics if params.lyrics is not None else dit_input_lyrics
+            logger.info(f"[generate_music] {params.task_type} task: using params.caption='{params.caption}', params.lyrics='{params.lyrics}'")
+            logger.info(f"[generate_music] Final inputs: dit_input_caption='{dit_input_caption}', dit_input_lyrics='{dit_input_lyrics}'")
+
+        # Cover/repaint/lego/extract: duration is locked to the source audio
+        # length.  Silently ignore whatever the caller passed — the handler
+        # will set audio_duration from the loaded waveform.
+        if params.task_type in ("cover", "repaint", "lego", "extract"):
+            audio_duration = None
+
         # Phase 2: DiT music generation
         # Use seed_for_generation (from config.seed or params.seed) instead of params.seed for actual generation
-        result = dit_handler.generate_music(
-            captions=dit_input_caption,
-            lyrics=dit_input_lyrics,
-            bpm=bpm,
-            key_scale=key_scale,
-            time_signature=time_signature,
-            vocal_language=dit_input_vocal_language,
-            inference_steps=params.inference_steps,
-            guidance_scale=params.guidance_scale,
-            use_random_seed=config.use_random_seed,
-            seed=seed_for_generation,  # Use config.seed (or params.seed fallback) instead of params.seed directly
-            reference_audio=params.reference_audio,
-            audio_duration=audio_duration,
-            batch_size=config.batch_size if config.batch_size is not None else 1,
-            src_audio=params.src_audio,
-            audio_code_string=audio_code_string_to_use,
-            repainting_start=params.repainting_start,
-            repainting_end=params.repainting_end,
-            instruction=params.instruction,
-            audio_cover_strength=params.audio_cover_strength,
-            task_type=params.task_type,
-            use_adg=params.use_adg,
-            cfg_interval_start=params.cfg_interval_start,
-            cfg_interval_end=params.cfg_interval_end,
-            shift=params.shift,
-            infer_method=params.infer_method,
-            timesteps=params.timesteps,
-            progress=progress,
-        )
+        dit_generate_kwargs = {
+            "captions": dit_input_caption,
+            "global_caption": params.global_caption,
+            "lyrics": dit_input_lyrics,
+            "bpm": bpm,
+            "key_scale": key_scale,
+            "time_signature": time_signature,
+            "vocal_language": dit_input_vocal_language,
+            "inference_steps": params.inference_steps,
+            "guidance_scale": params.guidance_scale,
+            "use_random_seed": config.use_random_seed,
+            "seed": seed_for_generation,  # Use config.seed (or params.seed fallback) instead of params.seed directly
+            "reference_audio": params.reference_audio,
+            "audio_duration": audio_duration,
+            "batch_size": config.batch_size if config.batch_size is not None else 1,
+            # text2music (Custom mode) never uses src_audio; force None to
+            # prevent stale UI values from leaking into generation.
+            "src_audio": None if params.task_type == "text2music" else params.src_audio,
+            "audio_code_string": audio_code_string_to_use,
+            "repainting_start": params.repainting_start,
+            "repainting_end": params.repainting_end,
+            "chunk_mask_mode": params.chunk_mask_mode,
+            "repaint_latent_crossfade_frames": params.repaint_latent_crossfade_frames,
+            "repaint_wav_crossfade_sec": params.repaint_wav_crossfade_sec,
+            "repaint_mode": params.repaint_mode,
+            "repaint_strength": params.repaint_strength,
+            "instruction": params.instruction,
+            "audio_cover_strength": params.audio_cover_strength,
+            "cover_noise_strength": params.cover_noise_strength,
+            "task_type": params.task_type,
+            "use_adg": params.use_adg,
+            "cfg_interval_start": params.cfg_interval_start,
+            "cfg_interval_end": params.cfg_interval_end,
+            "shift": params.shift,
+            "infer_method": params.infer_method,
+            "sampler_mode": params.sampler_mode,
+            "velocity_norm_threshold": params.velocity_norm_threshold,
+            "velocity_ema_factor": params.velocity_ema_factor,
+            "timesteps": params.timesteps,
+            "latent_shift": params.latent_shift,
+            "latent_rescale": params.latent_rescale,
+            "progress": progress,
+        }
+        supported_generate_keys = set(inspect.signature(dit_handler.generate_music).parameters.keys())
+        filtered_generate_kwargs = {
+            key: value for key, value in dit_generate_kwargs.items() if key in supported_generate_keys
+        }
+        dropped_generate_keys = sorted(set(dit_generate_kwargs.keys()) - supported_generate_keys)
+        if dropped_generate_keys:
+            logger.warning(
+                f"[generate_music] Skipping unsupported generate_music kwargs: {dropped_generate_keys}"
+            )
+        result = dit_handler.generate_music(**filtered_generate_kwargs)
 
         # Check if generation failed
         if not result.get("success", False):
@@ -734,7 +688,7 @@ def generate_music(
         base_params_dict = params.to_dict()
 
         # Save audio files using AudioSaver (format from config)
-        audio_format = config.audio_format if config.audio_format else "flac"
+        audio_format = str(config.audio_format).strip().lower() if config.audio_format else "flac"
         audio_saver = AudioSaver(default_format=audio_format)
 
         # Use handler's temp_dir for saving files
@@ -744,7 +698,6 @@ def generate_music(
         # Build audios list for GenerationResult with params and save files
         # Audio saving and UUID generation handled here, outside of handler
         audios = []
-        silent_warnings = []
         for idx, dit_audio in enumerate(dit_audios):
             # Create a copy of params dict for this audio
             audio_params = base_params_dict.copy()
@@ -752,16 +705,62 @@ def generate_music(
             # Update audio-specific values
             audio_params["seed"] = seed_list[idx] if idx < len(seed_list) else None
 
-            # Add audio codes if batch mode
+            # Add LM-generated audio codes (only if non-empty, to preserve
+            # user-provided codes when LM was used only for CoT metas)
             if lm_generated_audio_codes_list and idx < len(lm_generated_audio_codes_list):
-                audio_params["audio_codes"] = lm_generated_audio_codes_list[idx]
+                lm_code = lm_generated_audio_codes_list[idx]
+                if lm_code and str(lm_code).strip():
+                    audio_params["audio_codes"] = lm_code
+
+            # Add LoRA state to params for UUID generation (ensures different UUIDs when only LoRA state changes)
+            audio_params["lora_loaded"] = dit_handler.lora_loaded
+            audio_params["use_lora"] = dit_handler.use_lora
+            audio_params["lora_scale"] = dit_handler.lora_scale
+            audio_params["lora_weights_hash"] = get_lora_weights_hash(dit_handler)
+            audio_params["audio_format"] = audio_format
+            if audio_format == "mp3":
+                audio_params["mp3_bitrate"] = getattr(config, "mp3_bitrate", "128k")
+                audio_params["mp3_sample_rate"] = getattr(config, "mp3_sample_rate", 48000)
 
             # Get audio tensor and metadata
             audio_tensor = dit_audio.get("tensor")
             sample_rate = dit_audio.get("sample_rate", 48000)
 
+            # --- NORMALIZATION & LOGGING ---
+            if params.enable_normalization and params.normalization_db <= 0.0:
+                 try:
+                     peak_before = torch.max(torch.abs(audio_tensor)).item()
+                     logger.info(f"[Normalization] Audio {idx} BEFORE: Peak={peak_before:.4f}, Target={params.normalization_db}dB")
+                     
+                     audio_tensor = normalize_audio(audio_tensor, params.normalization_db)
+                     
+                     peak_after = torch.max(torch.abs(audio_tensor)).item()
+                     logger.info(f"[Normalization] Audio {idx} AFTER: Peak={peak_after:.4f}")
+                     
+                     # Update the tensor in the dict so downstream uses the normalized version ??
+                     # Actually we use audio_tensor variable below, so it's fine.
+                 except Exception as e:
+                     logger.error(f"Normalization failed: {e}")
+            # -------------------------------
+
+            # --- FADE IN / FADE OUT ---
+            if params.fade_in_duration > 0.0 or params.fade_out_duration > 0.0:
+                try:
+                    fade_in_samples = round(params.fade_in_duration * sample_rate)
+                    fade_out_samples = round(params.fade_out_duration * sample_rate)
+                    audio_tensor = apply_fade(audio_tensor, fade_in_samples, fade_out_samples)
+                    logger.info(
+                        f"[Fade] Audio {idx}: fade_in={params.fade_in_duration:.2f}s "
+                        f"({fade_in_samples} samples), fade_out={params.fade_out_duration:.2f}s "
+                        f"({fade_out_samples} samples)"
+                    )
+                except Exception as e:
+                    logger.error(f"Fade application failed: {e}")
+            # --------------------------
+
             # Generate UUID for this audio (moved from handler)
             batch_seed = seed_list[idx] if idx < len(seed_list) else seed_list[0] if seed_list else -1
+
             audio_code_str = lm_generated_audio_codes_list[idx] if (
                 lm_generated_audio_codes_list and idx < len(lm_generated_audio_codes_list)) else audio_code_string_to_use
             if isinstance(audio_code_str, list):
@@ -769,41 +768,31 @@ def generate_music(
 
             audio_key = generate_uuid_from_params(audio_params)
 
-            silent_check = False
-            if audio_tensor is not None:
-                silent_check, rms_val, peak_val = is_audio_silent(audio_tensor, channels_first=True)
-                if silent_check:
-                    logger.warning(
-                        f"[generate_music] Silent output detected (idx={idx}, RMS={rms_val:.2e}, peak={peak_val:.2e}). "
-                        "Likely cause: LLM backend returned empty conditioning, or incompatible torch/triton/flash-attn. "
-                        "Suggest running with --backend pt."
-                    )
-                    silent_warnings.append(
-                        f"Output {idx + 1}: silent or near-silent (RMS≈{rms_val:.2e}). "
-                        "Likely causes: LLM backend failure, incompatible torch/triton/flash-attn, or CPU/fallback path. "
-                        "Try running with --backend pt."
-                    )
-
+            # Save audio file (handled outside handler)
             audio_path = None
-            if audio_tensor is not None and save_dir is not None and not silent_check:
+            if audio_tensor is not None and save_dir is not None:
+
                 try:
-                    audio_file = os.path.join(save_dir, f"{audio_key}.{audio_format}")
+                    # Handle wav32 special case for extension
+                    file_ext = "wav" if audio_format == "wav32" else audio_format
+                    audio_file = os.path.join(save_dir, f"{audio_key}.{file_ext}")
                     audio_path = audio_saver.save_audio(audio_tensor,
                                                         audio_file,
                                                         sample_rate=sample_rate,
                                                         format=audio_format,
-                                                        channels_first=True)
+                                                        channels_first=True,
+                                                        mp3_bitrate=getattr(config, "mp3_bitrate", "128k"),
+                                                        mp3_sample_rate=getattr(config, "mp3_sample_rate", 48000))
                 except Exception as e:
                     logger.error(f"[generate_music] Failed to save audio file: {e}")
-                    audio_path = ""
+                    audio_path = ""  # Fallback to empty path
 
             audio_dict = {
-                "path": audio_path or "",
-                "tensor": audio_tensor,
+                "path": audio_path or "",  # File path (saved here, not in handler)
+                "tensor": audio_tensor,  # Audio tensor [channels, samples], CPU, float32
                 "key": audio_key,
                 "sample_rate": sample_rate,
                 "params": audio_params,
-                "silent": silent_check,
             }
 
             audios.append(audio_dict)
@@ -839,8 +828,6 @@ def generate_music(
             status_message = "\n".join(lm_status) + "\n" + status_message
         else:
             status_message = status_message
-        if silent_warnings:
-            status_message = "⚠️ Silent output detected:\n" + "\n".join(silent_warnings) + "\n\nSuggested fix: try running with --backend pt\n\n" + (status_message or "")
         # Create and return GenerationResult
         return GenerationResult(
             audios=audios,
